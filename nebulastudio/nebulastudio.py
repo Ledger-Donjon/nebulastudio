@@ -14,9 +14,30 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QLabel,
+    QGridLayout,
 )
 from .viewer import Viewer
 from PyQt6.QtGui import QKeySequence, QShortcut, QGuiApplication
+
+
+class NebulaStudioApplication(QApplication):
+    def __init__(self, argv):
+        super().__init__(argv)
+        self.setApplicationName("Nebula Studio")
+        # self.setApplicationVersion("0.1")
+        self.setOrganizationName("Ledger Donjon")
+        # self.setOrganizationDomain("nebulastudio.org")
+        self.setQuitOnLastWindowClosed(True)
+
+        self.new_window()
+
+    def new_window(self):
+        # Create a new instance of NebulaStudio and show it
+        window = NebulaStudio()
+        window.show()
+
+        # Set the new window as the active window
+        self.setActiveWindow(window)
 
 
 class NebulaStudio(QMainWindow):
@@ -32,7 +53,9 @@ class NebulaStudio(QMainWindow):
     def __init__(self):
         super().__init__()
         app = QApplication.instance()
-        assert app is not None, "NebulaStudio must be created after QApplication"
+        assert type(app) is NebulaStudioApplication, (
+            "NebulaStudio must be created after QApplication"
+        )
 
         self.setWindowTitle(app.applicationName())
         self.setGeometry(100, 100, 800, 600)
@@ -49,6 +72,8 @@ class NebulaStudio(QMainWindow):
             self.change_reticula_opacity
         )
         QShortcut(QKeySequence("S"), self).activated.connect(self.show_hide_cursor)
+        QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(app.new_window)
+        # QShortcut(QKeySequence("O"), self).activated.connect(self.change_orientation)
 
         # Set up the main layout
         self.setCentralWidget(w := QWidget())
@@ -61,10 +86,11 @@ class NebulaStudio(QMainWindow):
         hbox.addWidget(QLabel("D: Delete closest reticula"))
         hbox.addWidget(QLabel("T: Change reticula opacity"))
         hbox.addWidget(QLabel("S: Show/Hide mouse pointer"))
+        # hbox.addWidget(QLabel("O: Change orientation"))
         hbox.addStretch()
 
         # Set up the horizontal layout for the viewers
-        self.viewers_layout = QHBoxLayout()
+        self.viewers_layout = QGridLayout()
         vbox.addLayout(self.viewers_layout)
 
         # Accepting drops of images from the file system
@@ -77,6 +103,20 @@ class NebulaStudio(QMainWindow):
         # List of viewers
         self.viewers: list[Viewer] = []
         self.new_viewer()
+
+    def change_orientation(self):
+        rc = self.viewers_layout.rowCount()
+        cc = self.viewers_layout.columnCount()
+        for i in range(0, rc):
+            for j in range(i + 1, cc):
+                item = self.viewers_layout.itemAtPosition(i, j)
+                item2 = self.viewers_layout.itemAtPosition(j, i)
+                if item is not None:
+                    self.viewers_layout.removeItem(item)
+                    self.viewers_layout.addItem(item, j, i)
+                if item2 is not None:
+                    self.viewers_layout.removeItem(item2)
+                    self.viewers_layout.addItem(item2, i, j)
 
     def show_hide_cursor(self):
         if QGuiApplication.overrideCursor() is None:
@@ -114,7 +154,8 @@ class NebulaStudio(QMainWindow):
         self.viewers.append(viewer)
         if path is not None:
             viewer.open_image(path)
-        self.viewers_layout.addWidget(viewer, stretch=1)
+        self.viewers_layout.addWidget(viewer, 0, len(self.viewers) - 1)
+        self.viewers_layout.setColumnStretch(len(self.viewers) - 1, 1)
         viewer.scroll_by.connect(self.new_scroll_pos)
         viewer.reticula_pos.connect(self.new_reticula_pos)
 
