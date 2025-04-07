@@ -4,9 +4,9 @@ NebulaStudio is a project designed to observe and exploit the results of differe
 
 ## Features
 
-- Feature 1: [Brief description]
-- Feature 2: [Brief description]
-- Feature 3: [Brief description]
+- Feature 1: Import several images to be visualized side by side with synchronized zooming and panning
+- Feature 2: Have synchronized reticulas over all the images to point out the same position on all images
+- Feature 3: Possibility to fix the reticulas
 
 ## Installation
 
@@ -22,7 +22,7 @@ To get started with NebulaStudio, follow these steps:
    ```
 3. Install dependencies:
    ```bash
-   [Insert installation command, e.g., npm install]
+   python3 -m pip install -r requirements.txt
    ```
 
 ## Usage
@@ -30,7 +30,7 @@ To get started with NebulaStudio, follow these steps:
 Run the application with the following command:
 
 ```bash
-[Insert usage command, e.g., npm start]
+python3 -m nebulastudio
 ```
 
 ## Contributing
@@ -54,8 +54,4 @@ We welcome contributions! Please follow these steps:
 
 ## License
 
-This project is licensed under the [Insert License Name] License. See the [LICENSE](./LICENSE) file for details.
-
-## Contact
-
-For questions or feedback, please contact [your email or other contact information].
+This project is licensed under the GNU LESSER v3 License. See the [LICENSE](./LICENSE) file for details.
