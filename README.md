@@ -12,17 +12,21 @@ NebulaStudio is a project designed to observe and exploit the results of differe
 
 To get started with NebulaStudio, follow these steps:
 
-1. Clone the repository:
+1. Recommended: Create a virtual environment and activate it:
    ```bash
-   git clone https://github.com/your-username/nebulastudio.git
+   python3 -m venv .venv
+   source .venv/bin/activate
    ```
-2. Navigate to the project directory:
+2. Install Nebula Studio with `pip` directly from git repository:
+
    ```bash
-   cd nebulastudio
+   python3 -m pip install git+https://github.com/Ledger-Donjon/nebulastudio.git
    ```
-3. Install dependencies:
+
+   or from `pypi`:
+
    ```bash
-   python3 -m pip install -r requirements.txt
+   python3 -m pip install donjon-nebulastudio
    ```
 
 ## Usage
@@ -30,7 +34,7 @@ To get started with NebulaStudio, follow these steps:
 Run the application with the following command:
 
 ```bash
-python3 -m nebulastudio
+nebulastudio
 ```
 
 ## Contributing
@@ -54,4 +58,4 @@ We welcome contributions! Please follow these steps:
 
 ## License
 
-This project is licensed under the GNU LESSER v3 License. See the [LICENSE](./LICENSE) file for details.
+This project is licensed under the _LGPL-3.0_ License. See the [LICENSE](./LICENSE) file for details.
