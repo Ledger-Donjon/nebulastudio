@@ -120,6 +120,9 @@ class NebulaStudio(QMainWindow):
         self.rows = 1
         self.columns = 1
 
+        # Hide the mouse pointer
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
+
     def add_viewer_line(self, new_row: bool = True):
         # Add a new viewer to the layout)
         if new_row:
