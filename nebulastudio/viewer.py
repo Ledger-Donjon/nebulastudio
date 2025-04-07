@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class Viewer(QGraphicsView):
-    scroll_by = pyqtSignal(int, int)
+    scroll_content_to = pyqtSignal(int, int)
     reticula_pos = pyqtSignal(float, float)
 
     def __init__(self, nebula_studio: "NebulaStudio"):
@@ -26,6 +26,12 @@ class Viewer(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        hscrollbar = self.horizontalScrollBar()
+        vscrollbar = self.verticalScrollBar()
+        assert hscrollbar is not None and vscrollbar is not None
+        self.hscrollbar = hscrollbar
+        self.vscrollbar = vscrollbar
 
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -50,6 +56,13 @@ class Viewer(QGraphicsView):
         self.setAcceptDrops(True)
 
         self.fixed_reticulas: list[tuple[QGraphicsLineItem, QGraphicsLineItem]] = []
+
+        hscrollbar.valueChanged.connect(
+            lambda value: self.scroll_content_to.emit(value, vscrollbar.value())
+        )
+        vscrollbar.valueChanged.connect(
+            lambda value: self.scroll_content_to.emit(hscrollbar.value(), value)
+        )
 
     def fix_reticula(self):
         hline = self._scene.addLine(QLineF(self.hline.line()), self.hline.pen())
@@ -155,9 +168,6 @@ class Viewer(QGraphicsView):
         else:
             event.ignore()
 
-    # Detect scrolling image
-    def scrollContentsBy(self, dx: int, dy: int) -> None:
-        super().scrollContentsBy(dx, dy)
-        # Implement any additional logic you want to handle during scrolling
-        # For example, you could update a status bar or log the scroll event
-        self.scroll_by.emit(dx, dy)
+    def do_scroll_to(self, x: int, y: int) -> None:
+        self.hscrollbar.setValue(x)
+        self.vscrollbar.setValue(y)

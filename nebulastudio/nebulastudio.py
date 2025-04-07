@@ -73,7 +73,16 @@ class NebulaStudio(QMainWindow):
         )
         QShortcut(QKeySequence("S"), self).activated.connect(self.show_hide_cursor)
         QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(app.new_window)
-        # QShortcut(QKeySequence("O"), self).activated.connect(self.change_orientation)
+        QShortcut(QKeySequence("A"), self).activated.connect(
+            lambda: self.add_viewer_line(False)
+        )
+        QShortcut(QKeySequence("Shift+A"), self).activated.connect(self.add_viewer_line)
+        QShortcut(QKeySequence("R"), self).activated.connect(
+            lambda: self.remove_viewer_line(False)
+        )
+        QShortcut(QKeySequence("Shift+R"), self).activated.connect(
+            self.remove_viewer_line
+        )
 
         # Set up the main layout
         self.setCentralWidget(w := QWidget())
@@ -86,7 +95,10 @@ class NebulaStudio(QMainWindow):
         hbox.addWidget(QLabel("D: Delete closest reticula"))
         hbox.addWidget(QLabel("T: Change reticula opacity"))
         hbox.addWidget(QLabel("S: Show/Hide mouse pointer"))
-        # hbox.addWidget(QLabel("O: Change orientation"))
+        hbox.addStretch()
+        vbox.addLayout(hbox := QHBoxLayout())
+        hbox.addWidget(QLabel("(Shift+)A: Add column (or row) of viewers"))
+        hbox.addWidget(QLabel("(Shift+)R: Remove column (or row) of viewers"))
         hbox.addStretch()
 
         # Set up the horizontal layout for the viewers
@@ -98,25 +110,55 @@ class NebulaStudio(QMainWindow):
 
         # Set the initial reticula color index
         self.current_reticula_color_index = 0
-        self.current_reticula_opacity = 1.0
+        self.current_reticula_opacity = 0.4
 
         # List of viewers
         self.viewers: list[Viewer] = []
         self.new_viewer()
 
-    def change_orientation(self):
-        rc = self.viewers_layout.rowCount()
-        cc = self.viewers_layout.columnCount()
-        for i in range(0, rc):
-            for j in range(i + 1, cc):
-                item = self.viewers_layout.itemAtPosition(i, j)
-                item2 = self.viewers_layout.itemAtPosition(j, i)
-                if item is not None:
+        # Track internally the number of rows and columns
+        self.rows = 1
+        self.columns = 1
+
+    def add_viewer_line(self, new_row: bool = True):
+        # Add a new viewer to the layout)
+        if new_row:
+            # Add a new row of viewers
+            r_range = range(self.rows, self.rows + 1)
+            c_range = range(self.columns)
+            self.rows += 1
+        else:
+            r_range = range(self.rows)
+            c_range = range(self.columns, self.columns + 1)
+            self.columns += 1
+        for r in r_range:
+            for c in c_range:
+                self.new_viewer(row=r, column=c)
+
+    def remove_viewer_line(self, delete_row: bool = True):
+        # Remove a line of viewers from the layout
+        if delete_row:
+            if self.rows == 1:
+                return
+            # Remove the last row of viewers
+            r_range = range(self.rows - 1, self.rows)
+            c_range = range(self.columns)
+            self.viewers_layout.setRowStretch(self.rows - 1, 0)
+            self.rows -= 1
+        else:
+            if self.columns == 1:
+                return
+            r_range = range(self.rows)
+            c_range = range(self.columns - 1, self.columns)
+            self.viewers_layout.setColumnStretch(self.columns - 1, 0)
+            self.columns -= 1
+        for r in r_range:
+            for c in c_range:
+                item = self.viewers_layout.itemAtPosition(r, c)
+                if item is not None and type(viewer := item.widget()) is Viewer:
                     self.viewers_layout.removeItem(item)
-                    self.viewers_layout.addItem(item, j, i)
-                if item2 is not None:
-                    self.viewers_layout.removeItem(item2)
-                    self.viewers_layout.addItem(item2, i, j)
+                    self.viewers.remove(viewer)
+                    viewer.deleteLater()
 
     def show_hide_cursor(self):
         if QGuiApplication.overrideCursor() is None:
@@ -149,21 +191,25 @@ class NebulaStudio(QMainWindow):
                 self.RETICULA_COLORS[self.current_reticula_color_index]
             )
 
-    def new_viewer(self, path: str | None = None) -> None:
+    def new_viewer(
+        self, path: str | None = None, row: int = 0, column: int = 0
+    ) -> Viewer:
         viewer = Viewer(self)
         self.viewers.append(viewer)
         if path is not None:
             viewer.open_image(path)
-        self.viewers_layout.addWidget(viewer, 0, len(self.viewers) - 1)
-        self.viewers_layout.setColumnStretch(len(self.viewers) - 1, 1)
-        viewer.scroll_by.connect(self.new_scroll_pos)
+        self.viewers_layout.addWidget(viewer, row, column)
+        self.viewers_layout.setColumnStretch(column, 1)
+        self.viewers_layout.setRowStretch(row, 1)
+        viewer.scroll_content_to.connect(self.scroll_all_viewers_to)
         viewer.reticula_pos.connect(self.new_reticula_pos)
+        viewer.set_reticula_opacity(self.current_reticula_opacity)
+        return viewer
 
     def dragEnterEvent(self, a0: QDragEnterEvent | None) -> None:
         assert a0 is not None
         mime = a0.mimeData()
         assert mime is not None
-        print("Drag", mime.hasUrls(), mime.hasText(), mime.text())
         if mime.hasUrls():
             a0.accept()
         else:
@@ -190,8 +236,10 @@ class NebulaStudio(QMainWindow):
             a0.ignore()
         return super().dropEvent(a0)
 
-    def new_scroll_pos(self, dx, dy):
-        pass
+    def scroll_all_viewers_to(self, x: int, y: int):
+        for viewer in self.viewers:
+            viewer.do_scroll_to(x, y)
+            # viewer.repaint()
 
     def new_reticula_pos(self, x, y):
         for viewer in self.viewers:
