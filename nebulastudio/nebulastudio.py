@@ -1,9 +1,6 @@
 from PyQt6.QtCore import Qt, QLocale
 from PyQt6.QtGui import (
     QColor,
-    QDragEnterEvent,
-    QDragMoveEvent,
-    QDropEvent,
     QIcon,
     QColorConstants,
 )
@@ -105,9 +102,6 @@ class NebulaStudio(QMainWindow):
         self.viewers_layout = QGridLayout()
         vbox.addLayout(self.viewers_layout)
 
-        # Accepting drops of images from the file system
-        self.setAcceptDrops(True)
-
         # Set the initial reticula color index
         self.current_reticula_color_index = 0
         self.current_reticula_opacity = 0.4
@@ -208,36 +202,6 @@ class NebulaStudio(QMainWindow):
         viewer.reticula_pos.connect(self.new_reticula_pos)
         viewer.set_reticula_opacity(self.current_reticula_opacity)
         return viewer
-
-    def dragEnterEvent(self, a0: QDragEnterEvent | None) -> None:
-        assert a0 is not None
-        mime = a0.mimeData()
-        assert mime is not None
-        if mime.hasUrls():
-            a0.accept()
-        else:
-            a0.ignore()
-        return super().dragEnterEvent(a0)
-
-    def dragMoveEvent(self, a0: QDragMoveEvent | None) -> None:
-        return super().dragMoveEvent(a0)
-
-    def dropEvent(self, a0: QDropEvent | None) -> None:
-        assert a0 is not None
-        mime = a0.mimeData()
-        assert mime is not None
-        # Accept the event if it contains URLs
-        if mime.hasUrls():
-            # Get the first URL from the mime data
-            url = mime.urls()[0]
-            # Convert the URL to a local file path
-            filename = url.toLocalFile()
-            # Open the image file
-            self.new_viewer(filename)
-            a0.accept()
-        else:
-            a0.ignore()
-        return super().dropEvent(a0)
 
     def scroll_all_viewers_to(self, x: int, y: int):
         for viewer in self.viewers:
