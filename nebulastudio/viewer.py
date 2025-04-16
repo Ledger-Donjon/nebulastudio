@@ -3,10 +3,13 @@ from PyQt6.QtWidgets import (
     QGraphicsScene,
     QGraphicsPixmapItem,
     QGraphicsLineItem,
+    QFrame,
 )
-from PyQt6.QtGui import QColor, QPixmap, QPainter
+from .image import NebulaImage
+from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtCore import Qt, pyqtSignal, QLineF
 from typing import TYPE_CHECKING
+import os
 
 if TYPE_CHECKING:
     from nebulastudio.nebulastudio import NebulaStudio
@@ -26,6 +29,8 @@ class Viewer(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setFrameShape(QFrame.Shape.NoFrame)
 
         hscrollbar = self.horizontalScrollBar()
         vscrollbar = self.verticalScrollBar()
@@ -36,7 +41,7 @@ class Viewer(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
 
-        self.image_item: QGraphicsPixmapItem | None = None
+        self.images: list[NebulaImage] = []
 
         hline = self._scene.addLine(0, 0, 0, 0)
         vline = self._scene.addLine(0, 0, 0, 0)
@@ -64,7 +69,74 @@ class Viewer(QGraphicsView):
             lambda value: self.scroll_content_to.emit(hscrollbar.value(), value)
         )
 
+        self.setAcceptDrops(True)
+
+        self.sizePolicy().setHeightForWidth(True)
+
+        self.setContentsMargins(0, 0, 0, 0)
+
+    @property
+    def image_item(self) -> QGraphicsPixmapItem | None:
+        if self.images:
+            return self.images[-1]
+        return None
+
+    def open_image(
+        self, filename: str, replace: bool = False, opacity: None | float = None
+    ):
+        try:
+            image = NebulaImage(filename)
+        except Exception as e:
+            print("Failed to create image from file:", filename, e)
+            return
+
+        if replace:
+            # Remove all image items from the scene
+            for image in self.images:
+                self._scene.removeItem(image)
+            self.images.clear()
+
+        self.images.append(image)
+        self._scene.addItem(image)
+
+        if opacity is None:
+            for image in self.images:
+                image.setOpacity(1 / len(self.images))
+        else:
+            self.images[-1].setOpacity(opacity)
+
+        print("Image item added to scene:", filename, len(self.images), f"{opacity=}")
+
+    def set_reticula_pos(self, x: float, y: float):
+        has_image = (image := self.image_item) is not None
+        if has_image:
+            # Get size of the image item
+            size = image.pixmap().size()
+            width, height = size.width(), size.height()
+            # Calculate the position of the reticula
+            x = int(x * width)
+            y = int(y * height)
+            # Set the position of the reticula
+            self.hline.setLine(x, 0, x, height)
+            self.vline.setLine(0, y, width, y)
+
+        self.hline.setVisible(has_image)
+        self.vline.setVisible(has_image)
+
+    def set_reticula_opacity(self, opacity: float):
+        if self.hline is not None and self.vline is not None:
+            self.hline.setOpacity(opacity)
+            self.vline.setOpacity(opacity)
+        for hline, vline in self.fixed_reticulas:
+            if hline is not None and vline is not None:
+                hline.setOpacity(opacity)
+                vline.setOpacity(opacity)
+
     def fix_reticula(self):
+        """
+        Create a static reticula at the current position of the reticula
+            and add it to the list of fixed reticulas.
+        """
         hline = self._scene.addLine(QLineF(self.hline.line()), self.hline.pen())
         vline = self._scene.addLine(QLineF(self.vline.line()), self.vline.pen())
         assert hline is not None and vline is not None
@@ -76,6 +148,9 @@ class Viewer(QGraphicsView):
         self.fixed_reticulas.append((hline, vline))
 
     def delete_closest_reticula(self):
+        """
+        Delete the closest fixed reticula from the current position of the reticula.
+        """
         closest: int = -1
         min_dist: float = 1e10
         for i, (hline, vline) in enumerate(self.fixed_reticulas):
@@ -94,39 +169,20 @@ class Viewer(QGraphicsView):
         self._scene.removeItem(vline)
 
     def set_reticula_color(self, color: QColor | Qt.GlobalColor | int):
+        """
+        Change the color of the reticula.
+
+        :param color: The color of the reticula to apply.
+        """
         self.hline.setPen(color)
         self.vline.setPen(color)
 
-    def open_image(self, filename: str):
-        if not filename:
-            return
-        if self.image_item is not None:
-            self._scene.removeItem(self.image_item)
-        self.image_item = QGraphicsPixmapItem(QPixmap(filename))
-        self._scene.addItem(self.image_item)
-
-    def set_reticula_pos(self, x: float, y: float):
-        if self.image_item is not None:
-            # Get size of the image item
-            size = self.image_item.pixmap().size()
-            width, height = size.width(), size.height()
-            # Calculate the position of the reticula
-            x = int(x * width)
-            y = int(y * height)
-            # Set the position of the reticula
-            self.hline.setLine(x, 0, x, height)
-            self.vline.setLine(0, y, width, y)
-
-    def set_reticula_opacity(self, opacity: float):
-        if self.hline is not None and self.vline is not None:
-            self.hline.setOpacity(opacity)
-            self.vline.setOpacity(opacity)
-        for hline, vline in self.fixed_reticulas:
-            if hline is not None and vline is not None:
-                hline.setOpacity(opacity)
-                vline.setOpacity(opacity)
-
     def mouseMoveEvent(self, event):
+        """
+        Handle mouse move events to update the reticula position.
+
+        :param event: The mouse move event.
+        """
         if event is not None and self.image_item is not None:
             # Get size of the image item
             size = self.image_item.pixmap().size()
@@ -136,38 +192,93 @@ class Viewer(QGraphicsView):
             x = max(min(width, scene_pos.x()), 0) / width
             y = max(min(height, scene_pos.y()), 0) / height
             self.reticula_pos.emit(x, y)
-
         super().mouseMoveEvent(event)
 
-    def dragEnterEvent(self, event):
-        assert event is not None
-        mime = event.mimeData()
-        assert mime is not None
-        if mime.hasUrls():
-            event.accept()
-        else:
-            event.ignore()
+    def zoom(self, factor: float):
+        # Set the scale of the view
+        self.blockSignals(True)
+        self.scale(factor, factor)
+        self.blockSignals(False)
 
-    def dragMoveEvent(self, event):
-        assert event is not None
-        event.accept()
-
-    def dropEvent(self, event):
-        assert event is not None
-        mime = event.mimeData()
-        assert mime is not None
-        # Accept the event if it contains URLs
-        if mime.hasUrls():
-            # Get the first URL from the mime data
-            url = mime.urls()[0]
-            # Convert the URL to a local file path
-            filename = url.toLocalFile()
-            # Open the image file
-            self.open_image(filename)
-            event.accept()
-        else:
-            event.ignore()
+    def set_zoom(self, factor: float = 1.0):
+        # Set the scale of the view
+        self.blockSignals(True)
+        self.resetTransform()
+        self.scale(factor, factor)
+        self.blockSignals(False)
 
     def do_scroll_to(self, x: int, y: int) -> None:
         self.hscrollbar.setValue(x)
         self.vscrollbar.setValue(y)
+
+    def dragEnterEvent(self, event):
+        """
+        To handle the drad and drop event of image in the viewer.
+        This method checks if the dragged item is a valid image file and
+        if so, it accepts the event. Otherwise, it ignores the event.
+        It modifies the drop action based on the Alt key modifier
+        to indicate if the user wants to add images or replace them.
+
+        :param event: The drag enter event.
+        """
+        super().dragEnterEvent(event)
+        if event is None:
+            return
+        try:
+            mime = event.mimeData()
+            assert mime is not None
+            assert mime.hasUrls()
+            # Check if the first URL is a valid file path
+            url = mime.urls()[0]
+            assert url.isLocalFile()
+            path = url.toLocalFile()
+            assert path is not None
+            # Check if the file exists
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"File {path} does not exist")
+            # Check if the file is a valid image
+            assert path.lower().endswith(
+                (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".npy")
+            ), f"File {path} is not a valid image"
+        except (AssertionError, FileNotFoundError) as e:
+            print(str(e))
+            event.ignore()
+            return
+
+        if Qt.KeyboardModifier.AltModifier in event.modifiers():
+            event.setDropAction(Qt.DropAction.CopyAction)
+        else:
+            event.setDropAction(Qt.DropAction.LinkAction)
+
+        event.accept()
+
+    def dragMoveEvent(self, event):
+        super().dragMoveEvent(event)
+        assert event is not None
+        if Qt.KeyboardModifier.AltModifier in event.modifiers():
+            event.setDropAction(Qt.DropAction.CopyAction)
+        else:
+            event.setDropAction(Qt.DropAction.LinkAction)
+        event.accept()
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        assert event is not None
+        mime = event.mimeData()
+        assert mime is not None
+        # Accept the event if it contains URLs
+        if not mime.hasUrls():
+            event.ignore()
+            return
+
+        replace = Qt.DropAction.CopyAction in event.proposedAction()
+        for url in mime.urls():
+            # Check if the URL is a local file
+            if not url.isLocalFile():
+                continue
+            # Convert the URL to a local file path
+            filename = url.toLocalFile()
+            # Open the image file
+            self.open_image(filename, replace=replace)
+            replace = False
+            event.acceptProposedAction()
