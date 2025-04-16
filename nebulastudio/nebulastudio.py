@@ -31,7 +31,8 @@ class NebulaStudioApplication(QApplication):
         self.setOrganizationName("Ledger Donjon")
         # self.setOrganizationDomain("nebulastudio.org")
         self.setQuitOnLastWindowClosed(True)
-        self.load_path("import.yaml")
+        if os.path.exists("import.yaml"):
+            self.load_path("import.yaml")
 
     def new_window(self):
         # Create a new instance of NebulaStudio and show it
