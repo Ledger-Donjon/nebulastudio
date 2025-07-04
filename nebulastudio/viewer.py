@@ -108,6 +108,9 @@ class Viewer(QGraphicsView):
         print("Image item added to scene:", filename, len(self.images), f"{opacity=}")
 
     def set_reticula_pos(self, x: float, y: float):
+        visible = self.hline.isVisible()
+        if not visible:
+            return
         has_image = (image := self.image_item) is not None
         if has_image:
             # Get size of the image item
@@ -122,6 +125,21 @@ class Viewer(QGraphicsView):
 
         self.hline.setVisible(has_image)
         self.vline.setVisible(has_image)
+
+    def toggle_reticula_visibility(self):
+        """
+        Toggle the visibility of the reticula.
+        If the reticula are visible, hide them.
+        If they are hidden, show them.
+        """
+        if self.hline is not None and self.vline is not None:
+            visible = self.hline.isVisible()
+            self.hline.setVisible(not visible)
+            self.vline.setVisible(not visible)
+            for hline, vline in self.fixed_reticulas:
+                if hline is not None and vline is not None:
+                    hline.setVisible(not visible)
+                    vline.setVisible(not visible)
 
     def set_reticula_opacity(self, opacity: float):
         if self.hline is not None and self.vline is not None:

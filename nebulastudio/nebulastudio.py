@@ -161,6 +161,11 @@ class NebulaStudio(QMainWindow):
             "Change Opaci&ty", QKeySequence("T"), self.change_reticula_opacity
         )
         reticula_menu.addAction(
+            "Toggle Reticula Visibility",
+            QKeySequence("Shift+T"),
+            self.toggle_reticula_visibility,
+        )
+        reticula_menu.addAction(
             "&Show/Hide Mouse Pointer", QKeySequence("S"), self.show_hide_cursor
         )
         reticula_menu.addAction("&Delete Closest Reticula", QKeySequence("D"))
@@ -186,6 +191,8 @@ class NebulaStudio(QMainWindow):
 
         if settings is not None:
             self.load_settings(settings)
+
+        # Create a panel to adjust opacity
 
     def zoom_viewers(self, factor: float):
         # Zoom all viewers
@@ -429,6 +436,10 @@ class NebulaStudio(QMainWindow):
             QGuiApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
         else:
             QGuiApplication.restoreOverrideCursor()
+
+    def toggle_reticula_visibility(self):
+        for viewer in self.viewers:
+            viewer.toggle_reticula_visibility()
 
     def change_reticula_opacity(self):
         self.current_reticula_opacity += 0.1
