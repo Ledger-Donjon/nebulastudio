@@ -81,6 +81,17 @@ class Viewer(QGraphicsView):
             return self.images[-1]
         return None
 
+    def set_image_opacity(self, index: int, opacity: float):
+        """
+        Set the opacity of the image at the given index.
+        If the index is out of bounds, do nothing.
+        """
+        if 0 <= index < len(self.images):
+            self.images[index].setOpacity(opacity)
+            print(f"Set opacity of image {index} to {opacity}")
+        else:
+            print(f"Index {index} out of bounds for images list")
+
     def open_image(
         self, filename: str, replace: bool = False, opacity: None | float = None
     ):
