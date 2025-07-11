@@ -6,6 +6,7 @@ from PyQt6.QtGui import (
     QDropEvent,
     QIcon,
     QColorConstants,
+    QKeyEvent,
 )
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -19,41 +20,14 @@ from PyQt6.QtWidgets import (
 
 from .viewer import Viewer
 from PyQt6.QtGui import QKeySequence, QGuiApplication
+from .nebulaimage import NebulaImageGroup
+from .toolbars import NebulaStudioToolbar
 import os
 import yaml
+from typing import TYPE_CHECKING, cast
 
-
-class NebulaStudioApplication(QApplication):
-    def __init__(self, argv):
-        super().__init__(argv)
-        self.setApplicationName("Nebula Studio")
-        # self.setApplicationVersion("0.1")
-        self.setOrganizationName("Ledger Donjon")
-        # self.setOrganizationDomain("nebulastudio.org")
-        self.setQuitOnLastWindowClosed(True)
-        if os.path.exists("import.yaml"):
-            self.load_path("import.yaml")
-
-    def new_window(self):
-        # Create a new instance of NebulaStudio and show it
-        window = NebulaStudio()
-        window.show()
-
-        # Set the new window as the active window
-        self.setActiveWindow(window)
-
-        return window
-
-    def load_path(self, path: str, window: "NebulaStudio | None" = None):
-        # Load the settings from a YAML file
-        with open(path, "r") as f:
-            list_settings = yaml.safe_load(f)
-            if not isinstance(list_settings, list):
-                list_settings = [list_settings]
-
-            for i in range(len(list_settings)):
-                win = self.new_window()
-                win.load_settings(list_settings[i])
+if TYPE_CHECKING:
+    from .application import NebulaStudioApplication
 
 
 class NebulaStudio(QMainWindow):
@@ -66,13 +40,11 @@ class NebulaStudio(QMainWindow):
         QColorConstants.Magenta,
     ]
 
-    def __init__(self, settings: dict | None = None):
+    def __init__(self):
         super().__init__()
         app = QApplication.instance()
-        assert type(app) is NebulaStudioApplication, (
-            "NebulaStudio must be created after QApplication"
-        )
-        self.app = app
+        assert app is not None, "NebulaStudio must be created after QApplication"
+        self.app = cast("NebulaStudioApplication", app)
 
         self.setWindowTitle(app.applicationName())
         self.setGeometry(100, 100, 800, 600)
@@ -106,6 +78,9 @@ class NebulaStudio(QMainWindow):
         self.current_reticula_color_index = 0
         self.current_reticula_opacity = 0.4
 
+        # Scenarios
+        self.scenarios: dict[str, NebulaImageGroup] = {}
+
         # Track internally the number of rows and columns
         self.rows = 0
         self.columns = 0
@@ -117,9 +92,6 @@ class NebulaStudio(QMainWindow):
         assert self.rows == 1
         assert self.columns == 1
 
-        # Hide the mouse pointer
-        QGuiApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
-
         self.setAcceptDrops(True)
 
         # Create a menu
@@ -127,8 +99,11 @@ class NebulaStudio(QMainWindow):
         assert menu is not None
         file_menu = menu.addMenu("&File")
         assert file_menu is not None
-        file_menu.addAction("&New Window", QKeySequence("Ctrl+N"), app.new_window)
+        file_menu.addAction("&New Window", QKeySequence("Ctrl+N"), self.app.new_window)
         file_menu.addAction("&Close Window", QKeySequence("Ctrl+W"), self.close)
+        file_menu.addAction(
+            "&Save", QKeySequence("Ctrl+S"), lambda: self.app.save_settings()
+        )
 
         viewers_menu = menu.addMenu("&Viewers")
         assert viewers_menu is not None
@@ -149,6 +124,11 @@ class NebulaStudio(QMainWindow):
             "&Remove Viewer Column",
             QKeySequence("R"),
             lambda: self.remove_viewer_line(False),
+        )
+        viewers_menu.addAction(
+            "&Refresh Images",
+            QKeySequence("Ctrl+R"),
+            self.refresh_viewers,
         )
 
         reticula_menu = menu.addMenu("&Reticula")
@@ -189,10 +169,22 @@ class NebulaStudio(QMainWindow):
 
         self.stitching: dict | None = None
 
-        if settings is not None:
-            self.load_settings(settings)
+        # Create a toolbar to adjust images properties
+        self.image_prop_toolbar = NebulaStudioToolbar(self)
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.image_prop_toolbar)
+        self.image_prop_toolbar.setAllowedAreas(
+            Qt.ToolBarArea.LeftToolBarArea | Qt.ToolBarArea.RightToolBarArea
+        )
+        # Permit to detach the toolbar
+        self.image_prop_toolbar.setMovable(True)
+        self.image_prop_toolbar.setFloatable(True)
 
-        # Create a panel to adjust opacity
+        self.image_prop_toolbar.update_image_selector()
+
+    def refresh_viewers(self):
+        # Refresh all viewers
+        for v in self.viewers:
+            v.refresh()
 
     def zoom_viewers(self, factor: float):
         # Zoom all viewers
@@ -204,25 +196,16 @@ class NebulaStudio(QMainWindow):
         for v in self.viewers:
             v.set_zoom(factor)
 
-    def apply_stitch_zoom(self):
+    @property
+    def displacement_size_pixels(self) -> tuple[int, int] | None:
         if self.stitching is None:
-            return
-        """
-            displacements_um: { "x": 172.57, "y": 179.81 }
-            pixel_size_in_um: { "x": 14.8305, "y": 14.8305 }
-            objective: 20.0
-        """
-        if self.size_fixed:
-            self.viewers_widget.setFixedSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX)
-            self.size_fixed = False
-            return
-
+            return None
         displacements_um = self.stitching.get("displacements_um")
         pixel_size_in_um = self.stitching.get("pixel_size_in_um")
         objective = self.stitching.get("objective", 1.0)
         if displacements_um is None or pixel_size_in_um is None:
             print("Stitching settings not found")
-            return
+            return None
         assert (
             isinstance(displacements_um, dict)
             and "x" in displacements_um
@@ -238,12 +221,37 @@ class NebulaStudio(QMainWindow):
         # Get the size of displacement in pixels
         viewrect_w = objective * displacements_um["x"] / pixel_size_in_um["x"]
         viewrect_h = objective * displacements_um["y"] / pixel_size_in_um["y"]
+
+        return (
+            int(viewrect_w),
+            int(viewrect_h),
+        )
+
+    def apply_stitch_zoom(self):
+        if self.stitching is None:
+            return
+        """
+            displacements_um: { "x": 172.57, "y": 179.81 }
+            pixel_size_in_um: { "x": 14.8305, "y": 14.8305 }
+            objective: 20.0
+        """
+        if self.size_fixed:
+            self.viewers_widget.setFixedSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX)
+            self.size_fixed = False
+            return
+
+        # Get the size of displacement in pixels
+        displacements = self.displacement_size_pixels
+        assert displacements is not None
+        viewrect_w, viewrect_h = displacements
+
         # Set the zoom factor for all viewers
         container = self.viewers_widget
         assert container is not None
         # The container of the images must have a size proportional to:
         container_w = viewrect_w * self.columns
         container_h = viewrect_h * self.rows
+
         # Eg a width/height ratio:
         ratio = container_w / container_h
         # get the current height of the container
@@ -252,17 +260,17 @@ class NebulaStudio(QMainWindow):
             int(height * ratio),
             int(height),
         )
-
         self.size_fixed = True
 
-        # The wiewers must shows a portion of the image of height 'viewrect_h'
+        # The viewers must shows a portion of the image of height 'viewrect_h'
         # Its actual size is 'height'
         # To show the same portion of image, we need to set the zoom factor
         zoom_factor = (height / self.rows) / viewrect_h
 
         for viewer in self.viewers:
-            viewer.setSceneRect
+            # viewer.setSceneRect
             viewer.set_zoom(zoom_factor)
+            viewer.refresh()
 
     def dragEnterEvent(self, a0: QDragEnterEvent | None) -> None:
         super().dragEnterEvent(a0)
@@ -301,19 +309,30 @@ class NebulaStudio(QMainWindow):
         assert url.isLocalFile()
         path = url.toLocalFile()
         assert path is not None
-        self.app.load_path(path)
+        self.app.load_config(path)
         return super().dropEvent(a0)
 
-    def viewer_at(self, row, column) -> Viewer:
+    def viewer_at(self, row: int, column: int, create: bool = True) -> Viewer | None:
         item = self.viewers_layout.itemAtPosition(row, column)
         if item is not None and type(viewer := item.widget()) is Viewer:
             return viewer
+        if not create:
+            return None
         return self.new_viewer(row=row, column=column)
 
-    def load_settings(self, settings: dict):
+    @property
+    def title(self) -> str:
+        return self.windowTitle()
+
+    @title.setter
+    def title(self, value: str):
+        self.setWindowTitle(value)
+        self.image_prop_toolbar.setWindowTitle(value + " - Image Parameters")
+        print(f"Window title set to {value}")
+
+    def load_config(self, settings: dict):
         if "title" in settings:
-            self.setWindowTitle(settings["title"])
-            print(f"Window title set to {settings['title']}")
+            self.title = settings["title"]
 
         stitching = settings.get("stitching")
         if stitching is not None:
@@ -359,17 +378,19 @@ class NebulaStudio(QMainWindow):
         row_range = to_range(images_dict.get("row_key"), ranges)
         column_range = to_range(images_dict.get("column_key"), ranges)
 
-        patterns = images_dict.get("patterns")
-        opacities = images_dict.get("opacities")
-        if patterns is None or len(patterns) == 0:
+        scenarios = images_dict.get("scenarios")
+        assert type(scenarios) is list, "'scenarios' key must be a list"
+        if scenarios is None or len(scenarios) == 0:
             return
 
         r = 0
+        w = None
         for row in row_range:
             c = 0
             for column in column_range:
                 replace = True
                 w = self.viewer_at(r, c)
+                assert w is not None
                 substitutions = {}
                 if row_key is not None:
                     substitutions[row_key] = row if isinstance(row, int) else row[1]
@@ -378,18 +399,103 @@ class NebulaStudio(QMainWindow):
                         column if isinstance(column, int) else column[1]
                     )
 
-                for i, pattern in enumerate(patterns):
-                    assert isinstance(pattern, str)
+                for i, scenario in enumerate(scenarios):
+                    assert isinstance(scenario, dict), (
+                        "'scenarios' must be a list of dictionaries"
+                    )
+                    name = scenario.get("name")
+                    assert isinstance(name, str), (
+                        "'name' key in scenario must be a string"
+                    )
+                    pattern = scenario.get("pattern")
+                    assert isinstance(pattern, str), (
+                        "'pattern' key in scenario must be a string"
+                    )
                     filepath = pattern.format(**substitutions)
-                    opacity = None
-                    if type(opacities) is list and 0 <= i < len(opacities):
-                        opacity = opacities[i]
-                        if not isinstance(opacity, float):
-                            opacity = None
-                    w.open_image(filepath, replace=replace, opacity=opacity)
+
+                    ref_pattern = scenario.get("reference")
+                    if ref_pattern is not None:
+                        assert isinstance(ref_pattern, str), (
+                            "'reference' key in scenario must be a string"
+                        )
+                        ref_filepath = ref_pattern.format(**substitutions)
+                    else:
+                        ref_filepath = None
+
+                    if name not in self.scenarios:
+                        group = NebulaImageGroup(
+                            name, pattern=pattern, reference_pattern=ref_pattern
+                        )
+                        self.scenarios[name] = group
+                    else:
+                        group = self.scenarios[name]
+
+                    image = w.open_image(
+                        filepath,
+                        replace=replace,
+                        pattern=pattern,
+                        reference=ref_filepath,
+                        reference_pattern=ref_pattern,
+                    )
+                    if image is not None:
+                        group.images.append(image)
+
                     replace = False
                 c += 1
             r += 1
+
+        self.image_prop_toolbar.update_image_selector()
+
+    def load_settings(self, settings: dict):
+        if "title" in settings and not self.windowTitle() == settings["title"]:
+            # Prevent application of settings if the title does not match
+            # the current window title
+            # This is useful to avoid applying settings to the wrong window
+            print(
+                f"Window title does not match: {self.windowTitle()} != {settings['title']}"
+            )
+
+        # Load scenarios settings
+        scenarios = settings.get("scenarios", dict())
+        if not isinstance(scenarios, dict):
+            print("'scenarios' key must be a dictionary")
+        else:
+            for scenario, scenario_settings in scenarios.items():
+                if scenario not in self.scenarios:
+                    print(f"Scenario {scenario} not found in the current window")
+                    continue
+                self.scenarios[scenario].settings = scenario_settings
+
+        images = settings.get("images", dict())
+        if not isinstance(images, dict):
+            print("'images' key must be a dictionary")
+        else:
+            for image_url, image_settings in images.items():
+                for viewer in self.viewers:
+                    for image in viewer.group.images:
+                        if image_url in image.image_url:
+                            # Apply the settings to the image
+                            image.settings = image_settings
+
+        positions = settings.get("positions", [])
+        if not isinstance(positions, list):
+            print("'positions' key must be a list")
+        else:
+            for pos in positions:
+                if not isinstance(pos, dict):
+                    print("Each position must be a dictionary")
+                    continue
+                row = pos.get("position", [0, 0])
+                if not isinstance(row, list) or len(row) != 2:
+                    print("Position must be a list of two integers")
+                    continue
+                r, c = row
+                if not isinstance(r, int) or not isinstance(c, int):
+                    print("Row and column must be integers")
+                    continue
+                viewer = self.viewer_at(r, c)
+                assert viewer is not None
+                viewer.settings = pos
 
     def add_viewer_line(self, new_row: bool = True):
         # Add a new viewer to the layout)
@@ -469,7 +575,7 @@ class NebulaStudio(QMainWindow):
     def new_viewer(
         self, path: str | None = None, row: int = 0, column: int = 0
     ) -> Viewer:
-        viewer = Viewer(self)
+        viewer = Viewer(row, column, self)
         self.viewers.append(viewer)
         if path is not None:
             viewer.open_image(path)
@@ -493,3 +599,76 @@ class NebulaStudio(QMainWindow):
     def new_reticula_pos(self, x, y):
         for viewer in self.viewers:
             viewer.set_reticula_pos(x, y)
+
+    # When the window becomes active, update the reticula color
+    def activateWindow(self) -> None:
+        print(f"Activating NebulaStudio window {self.windowTitle()}")
+        return super().activateWindow()
+
+    @property
+    def settings(self) -> dict:
+        """
+        Returns the settings of the Nebula Studio window.
+        """
+        d: dict = {"title": self.windowTitle()}
+        positions: list[dict] = []
+        for v in self.viewers:
+            if (s := v.settings) is not None:
+                positions.append(s)
+        if positions:
+            d["positions"] = positions
+        scenarios = {
+            scenario.name: s
+            for scenario in self.scenarios.values()
+            if (s := scenario.settings) is not None
+        }
+        if scenarios:
+            d["scenarios"] = scenarios
+
+        images = {}
+        for viewer in self.viewers:
+            for img in viewer.group.images:
+                if s := img.settings:
+                    images[img.name] = s
+        if images:
+            d["images"] = images
+        return d
+
+    def keyPressEvent(self, a0: QKeyEvent | None) -> None:
+        if a0 is None:
+            return super().keyPressEvent(a0)
+        if a0.key() == Qt.Key.Key_Escape:
+            # If Escape is pressed, close the window
+            self.close()
+            return super().keyPressEvent(a0)
+
+        if a0.key() == Qt.Key.Key_0:
+            for scenario in self.scenarios.values():
+                for image in scenario.images:
+                    image.setVisible(True)
+
+        # Check for key press is 1, 2, 3, 4, 5, 6, 7, 8, or 9
+        if a0.key() not in (
+            Qt.Key.Key_1,
+            Qt.Key.Key_2,
+            Qt.Key.Key_3,
+            Qt.Key.Key_4,
+            Qt.Key.Key_5,
+            Qt.Key.Key_6,
+            Qt.Key.Key_7,
+            Qt.Key.Key_8,
+            Qt.Key.Key_9,
+        ):
+            return super().keyPressEvent(a0)
+        index = a0.key() - Qt.Key.Key_1
+        if index >= len(self.scenarios):
+            return super().keyPressEvent(a0)
+
+        for i, scenario in enumerate(self.scenarios.values()):
+            if i != index:
+                continue
+            visible = scenario.images[0].isVisible() if scenario.images else False
+            for image in scenario.images:
+                image.setVisible(not visible)
+
+        return super().keyPressEvent(a0)

@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import (
     QGraphicsLineItem,
     QFrame,
 )
-from .image import NebulaImage
-from PyQt6.QtGui import QColor, QPainter
+from .nebulaimage import NebulaImage, NebulaImageGroup
+from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QLineF
 from typing import TYPE_CHECKING
 import os
@@ -19,13 +19,14 @@ class Viewer(QGraphicsView):
     scroll_content_to = pyqtSignal(int, int)
     reticula_pos = pyqtSignal(float, float)
 
-    def __init__(self, nebula_studio: "NebulaStudio"):
+    def __init__(self, row: int, column: int, nebula_studio: "NebulaStudio"):
         super().__init__()
 
         self.nebula_studio = nebula_studio
+        self.row, self.column = (row, column)
 
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        # self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -41,11 +42,14 @@ class Viewer(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
 
-        self.images: list[NebulaImage] = []
+        self.group = NebulaImageGroup(f"Row {row}, Column {column}")
 
         hline = self._scene.addLine(0, 0, 0, 0)
         vline = self._scene.addLine(0, 0, 0, 0)
         assert hline is not None and vline is not None
+
+        hline.setVisible(False)
+        vline.setVisible(False)
 
         self.vline = vline
         self.hline = hline
@@ -77,8 +81,8 @@ class Viewer(QGraphicsView):
 
     @property
     def image_item(self) -> QGraphicsPixmapItem | None:
-        if self.images:
-            return self.images[-1]
+        if self.group.images:
+            return self.group.images[-1]
         return None
 
     def set_image_opacity(self, index: int, opacity: float):
@@ -86,37 +90,42 @@ class Viewer(QGraphicsView):
         Set the opacity of the image at the given index.
         If the index is out of bounds, do nothing.
         """
-        if 0 <= index < len(self.images):
-            self.images[index].setOpacity(opacity)
+        if 0 <= index < len(self.group.images):
+            self.group.images[index].setOpacity(opacity)
             print(f"Set opacity of image {index} to {opacity}")
         else:
             print(f"Index {index} out of bounds for images list")
 
     def open_image(
-        self, filename: str, replace: bool = False, opacity: None | float = None
+        self,
+        filename: str,
+        replace: bool = False,
+        pattern: str | None = None,
+        reference: None | str = None,
+        reference_pattern: str | None = None,
     ):
         try:
-            image = NebulaImage(filename)
+            image = NebulaImage(
+                filename,
+                reference_url=reference,
+                pattern=pattern,
+                reference_pattern=reference_pattern,
+            )
+
         except Exception as e:
             print("Failed to create image from file:", filename, e)
             return
 
         if replace:
             # Remove all image items from the scene
-            for image in self.images:
+            for image in self.group.images:
                 self._scene.removeItem(image)
-            self.images.clear()
+            self.group.images.clear()
 
-        self.images.append(image)
+        self.group.images.append(image)
         self._scene.addItem(image)
-
-        if opacity is None:
-            for image in self.images:
-                image.setOpacity(1 / len(self.images))
-        else:
-            self.images[-1].setOpacity(opacity)
-
-        print("Image item added to scene:", filename, len(self.images), f"{opacity=}")
+        print("Image item added to scene:", filename, len(self.group.images))
+        return image
 
     def set_reticula_pos(self, x: float, y: float):
         visible = self.hline.isVisible()
@@ -311,3 +320,37 @@ class Viewer(QGraphicsView):
             self.open_image(filename, replace=replace)
             replace = False
             event.acceptProposedAction()
+
+    def refresh(self):
+        """
+        Refresh the viewer by updating the image items.
+        This method is called when the user wants to refresh the viewer.
+        It updates the image items in the scene.
+        """
+        for image in self.group.images:
+            image.update_pixmap()
+        # self.set_zoom(1.0)
+        # self.setReticulaPos(0.5, 0.5)
+
+    @property
+    def settings(self) -> dict | None:
+        """
+        Opens the settings dialog for the viewer.
+        """
+        d = self.group.settings
+        if d is None:
+            return None
+        d["position"] = [self.row, self.column]
+        return d
+
+    @settings.setter
+    def settings(self, value: dict):
+        """
+        Sets the settings for the viewer.
+        """
+        if (
+            "position" in value
+            and isinstance(value["position"], list)
+            and value["position"] == [self.row, self.column]
+        ):
+            self.group.settings = value

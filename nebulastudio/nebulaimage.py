@@ -1,0 +1,434 @@
+from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtWidgets import (
+    QGraphicsItem,
+    QGraphicsSceneMouseEvent,
+    QGraphicsPixmapItem,
+    QGraphicsSceneContextMenuEvent,
+    QMenu,
+    QLabel,
+)
+from PyQt6.QtCore import Qt, QRectF, QRect
+from PIL import Image
+import os
+import numpy
+
+from .diff import make_rgb_pixmap, construct_diff_ndarray, normalize_to_8bits
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .nebulastudio import NebulaStudio
+    from .viewer import Viewer
+
+
+class NebulaImage(QGraphicsPixmapItem):
+    """
+    A class representing an image in Nebula Studio.
+    """
+
+    def __init__(
+        self,
+        image_url: str | None = None,
+        reference_url: str | None = None,
+        pattern: str | None = None,
+        reference_pattern: str | None = None,
+    ):
+        """
+        Initializes the NebulaImage instance.
+
+        Args:
+            image_url (str): The URL of the image.
+            pattern (str): The pattern of filename it is from.
+        """
+        super().__init__()
+        self.image_url = image_url
+        self.reference_url = reference_url
+        self.pattern = pattern
+        self.reference_pattern = reference_pattern
+
+        self.image = None
+        self.reference_image = None
+        self.diff_image = None
+        self._balances = (0.0, 1.0)
+
+        # Populate image, reference image and diff image objects
+        if self.image_url is not None:
+            self.load_files(self.image_url, self.reference_url)
+        self.update_pixmap()
+
+    @property
+    def name(self) -> str:
+        """
+        Returns the URL of the image.
+        """
+        return os.path.basename(self.image_url) if self.image_url else "Unnamed Image"
+
+    @staticmethod
+    def file_to_numpy(filename: str | None) -> numpy.ndarray | None:
+        if filename is None:
+            return None
+
+        if not (os.path.exists(filename) and os.path.isfile(filename)):
+            raise FileNotFoundError(f"File {filename} does not exist")
+
+        if filename.endswith(".npy"):
+            # Load the image from the numpy file
+            return numpy.load(filename).astype(numpy.uint64)
+
+        image = Image.open(filename)
+        # Convert the image in grayscale if the image has only one channel
+        if image.mode in ("L", "1", "P"):
+            image = image.convert("L")  # Convert to grayscale
+        else:
+            image = image.convert("RGB")
+
+        return numpy.array(image)
+
+    def load_files(self, filename: str, reference: str | None = None):
+        self.image = self.file_to_numpy(filename)
+        self.reference_image = self.file_to_numpy(reference)
+        if self.image is not None and self.reference_image is not None:
+            self.diff_image = construct_diff_ndarray(self.image, self.reference_image)
+
+    def update_tooltip(self):
+        self.setToolTip(
+            f"Image: {self.name}"
+            + (
+                f"\nReference: {os.path.basename(self.reference_url)}"
+                if self.reference_url
+                else ""
+            )
+            + (f"\nGroup: {self.viewer.group.groupname}" if self.viewer else "")
+            + (
+                f"\nScenarios: {','.join([scenario.name for scenario in scenarios])}"
+                if (scenarios := self.scenarios)
+                else ""
+            )
+        )
+
+    def update_pixmap(self):
+        """
+        Updates the pixmap with the current numpy image.
+        """
+        if self.image is None:
+            self.setPixmap(QPixmap())  # Clear the pixmap if no image is loaded
+            return
+
+        self.setPixmap(
+            make_rgb_pixmap(
+                self.diff_image if self.diff_image is not None else self.image,
+                balances=self.balances,
+            )
+        )
+
+    @property
+    def balances(self) -> tuple[float, float]:
+        """
+        Returns the black and white balances of the image.
+        """
+        return self._balances
+
+    @balances.setter
+    def balances(self, value: tuple[float, float]):
+        """
+        Sets the black and white balances of the image.
+
+        Args:
+            value (tuple[float, float]): The new black and white balances.
+        """
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise ValueError("Balances must be a tuple of two floats.")
+        self._balances = value
+        self.update_pixmap()
+
+    def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent | None) -> None:
+        print(f"Double clicked on image: {self.name}")
+        if event and (ns := self.nebula_studio) is not None:
+            ns.image_prop_toolbar.image_panel.image = self
+            event.accept()  # Accept the event to prevent further processing
+            return
+        return super().mouseDoubleClickEvent(event)
+
+    # Context menu settings for the image
+    def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent | None) -> None:
+        """Handles the context menu event for the image."""
+        if event is not None:
+            menu = QMenu()
+            menu.addAction("Align left", lambda: self.align(Qt.AlignmentFlag.AlignLeft))
+            menu.addAction(
+                "Align right", lambda: self.align(Qt.AlignmentFlag.AlignRight)
+            )
+            menu.addAction("Align top", lambda: self.align(Qt.AlignmentFlag.AlignTop))
+            menu.addAction(
+                "Align bottom", lambda: self.align(Qt.AlignmentFlag.AlignBottom)
+            )
+            menu.addAction(
+                "Set same offset for all images",
+                lambda: self.align(Qt.AlignmentFlag.AlignCenter),
+            )
+            menu.exec(event.screenPos())
+            event.accept()
+
+    def align(self, direction: Qt.AlignmentFlag):
+        """
+        Aligns the image to the left, right, top, or bottom of the viewer.
+        This method is a placeholder and should be implemented with actual alignment logic.
+        """
+        if direction == Qt.AlignmentFlag.AlignCenter:
+            for image in self.siblings:
+                image.posOrigin = self.pos()
+            return
+
+        if (v := self.viewer) is None or (ns := self.nebula_studio) is None:
+            print("No viewer found for alignment.")
+            return
+
+        if direction == Qt.AlignmentFlag.AlignLeft:
+            v2 = ns.viewer_at(v.row, v.column - 1, create=False)
+        elif direction == Qt.AlignmentFlag.AlignRight:
+            v2 = ns.viewer_at(v.row, v.column + 1, create=False)
+        elif direction == Qt.AlignmentFlag.AlignTop:
+            v2 = ns.viewer_at(v.row - 1, v.column, create=False)
+        elif direction == Qt.AlignmentFlag.AlignBottom:
+            v2 = ns.viewer_at(v.row + 1, v.column, create=False)
+        else:
+            print(f"Unknown alignment direction: {direction}")
+            return
+
+        # Get image of the same group in the other viewer
+        if v2 is None:
+            print("No viewer found for alignment.")
+            return
+
+        image = None
+        for image in v2.group.images:
+            if any(s in self.scenarios for s in image.scenarios):
+                print(image.name, "is in the same scenario as", self.name)
+                break
+
+        if image is None:
+            print("No image found in the same scenario.")
+            return
+
+        assert (ns := self.nebula_studio) is not None, (
+            "NebulaStudio instance is not available"
+        )
+        assert (d := ns.displacement_size_pixels) is not None
+        dx, dy = d
+
+        # Get the image size
+        numpy_image = self.image
+        assert numpy_image is not None, "Image data is not available"
+
+        numpy_image2 = image.image
+        assert numpy_image2 is not None, "Image data is not available"
+
+        height, width = numpy_image.shape[:2]  # Get the height and width of the image
+        assert type(height) is int and type(width) is int, (
+            f"Image dimensions are not integers: height={height}, width={width}"
+        )
+
+        # Compute the cropping rectangle of the image
+        cropping_rect = QRectF(
+            0, 0, width, height
+        )  # Create a QRectF for the image size
+
+        image_left = self
+        image_right = image
+
+        # Consider the displacement
+        if direction == Qt.AlignmentFlag.AlignRight:
+            cropping_rect.translate(dx, 0)
+            # image_left = self
+            # image_right = image
+        elif direction == Qt.AlignmentFlag.AlignLeft:
+            cropping_rect.translate(-dx, 0)
+            # image_right = self
+            # image_left = image
+        elif direction == Qt.AlignmentFlag.AlignTop:
+            cropping_rect.translate(0, -dy)
+            # image_right = self
+            # image_left = image
+        elif direction == Qt.AlignmentFlag.AlignBottom:
+            cropping_rect.translate(0, dy)
+
+        # # Adjust the cropping rectangle to the current offset applied on the current image
+        cropping_rect.translate(-image_left.pos().x(), -image_left.pos().y())
+
+        # # Adjust the cropping rectangle to the current offset applied on the other image
+        cropping_rect.translate(image_right.pos().x(), image_right.pos().y())
+
+        # Crop the numpy array according to the cropping rectangle
+        if cropping_rect.width() <= 0 or cropping_rect.height() <= 0:
+            print("Cropping rectangle has zero width or height, cannot crop.")
+            return
+
+        x = int(cropping_rect.x())
+        y = int(cropping_rect.y())
+
+        # FOR DEBUGGING PURPOSES
+        cropped_array = numpy_image[y:, x:, :]
+        cropped_pixmap = make_rgb_pixmap(cropped_array, balances=self.balances)
+        self.cropped_image = QLabel()
+        self.cropped_image.setWindowTitle(f"Cropped Image LEFT {cropped_array.shape}")
+        self.cropped_image.setPixmap(cropped_pixmap)
+        self.cropped_image.show()
+
+        cropped_array2 = numpy_image2[: height - y, : width - x, :]
+        cropped_pixmap2 = make_rgb_pixmap(cropped_array2, balances=self.balances)
+        self.cropped_image2 = QLabel()
+        self.cropped_image2.setWindowTitle(
+            f"Cropped Image RIGHT {cropped_array2.shape}"
+        )
+        self.cropped_image2.setPixmap(cropped_pixmap2)
+        self.cropped_image2.show()
+
+        # if direction == Qt.AlignmentFlag.AlignLeft:
+        #     image_left = self
+        #     image_right = image
+
+        #     pos_left = image_left.pos().x()
+        #     pos_right = image_right.pos().x()
+
+        # elif direction == Qt.AlignmentFlag.AlignRight:
+        #     image_left = image
+        #     image_right = self
+
+        # # Get the rect to crop the first image
+
+        # if direction == Qt.AlignmentFlag.AlignLeft:
+        #     new_x = image.pos().x() - width - dx
+        #     new_y = image.pos().y()
+
+    @property
+    def settings(self) -> dict | None:
+        """
+        Returns the settings for the image.
+        """
+        d = {}
+        if self.opacity() < 1.0:
+            d["opacity"] = self.opacity()
+        if ((p := self.pos()).x(), p.y()) != (0.0, 0.0):
+            d["offset"] = [p.x(), p.y()]
+        if self.balances != (0.0, 1.0):
+            d["balances"] = list(self.balances)
+        return d if d else None
+
+    @settings.setter
+    def settings(self, value: dict):
+        """
+        Sets the settings for the image.
+
+        Args:
+            value (dict): The new settings for the image.
+        """
+        print(f"Setting image settings: {value} to {self.name}")
+        if "opacity" in value:
+            self.setOpacity(value["opacity"])
+        if "offset" in value:
+            self._pos = float(value["offset"][0]), float(value["offset"][1])
+            self.update_pixmap()
+        if "balances" in value:
+            self.balances = tuple(value["balances"])
+            self.update_pixmap()
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent | None) -> None:
+        if event is not None and event.modifiers() & Qt.KeyboardModifier.AltModifier:
+            self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable)
+            self.posOrigin = self.pos()
+            if (v := self.viewer) is not None:
+                for image in v.group.images:
+                    image.posOrigin = image.pos()
+
+        return super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent | None) -> None:
+        self.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable, False)
+        if event is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            diff = self.pos() - self.posOrigin
+            for image in self.siblings:
+                if image is not self:
+                    image.setPos(image.posOrigin + diff)
+        return super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent | None) -> None:
+        # If MAJ is pressed, we want to move all the images in the group
+        if event is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            diff = self.pos() - self.posOrigin
+            for image in self.siblings:
+                if image is not self:
+                    image.setPos(image.posOrigin + diff)
+
+        return super().mouseMoveEvent(event)
+
+    @property
+    def viewer(self) -> "Viewer | None":
+        """
+        Returns the viewer associated with this image.
+        """
+        if (scene := self.scene()) is not None:
+            return cast("Viewer", scene.parent())
+        return None
+
+    @property
+    def siblings(self) -> list["NebulaImage"]:
+        """
+        Returns a list of sibling images in the same viewer.
+        """
+        if (v := self.viewer) is not None:
+            return v.group.images
+        return []
+
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value):
+        if change in [
+            QGraphicsItem.GraphicsItemChange.ItemVisibleHasChanged,
+        ]:
+            self.update_tooltip()
+        return super().itemChange(change, value)
+
+    @property
+    def nebula_studio(self) -> "NebulaStudio | None":
+        """
+        Returns the NebulaStudio instance associated with this image.
+        """
+        if (v := self.viewer) is not None:
+            return v.nebula_studio
+        return None
+
+    @property
+    def scenarios(self) -> list["NebulaImageGroup"]:
+        """
+        Returns a list of scenarios associated with this image.
+        """
+        if ns := self.nebula_studio:
+            return [
+                scenario
+                for scenario in ns.scenarios.values()
+                if scenario.images and self in scenario.images
+            ]
+        return []
+
+
+class NebulaImageGroup(NebulaImage):
+    """A class that permits to handle parameters for a group of images (eg, from same scenario)."""
+
+    def __init__(
+        self,
+        groupname: str,
+        pattern: str | None = None,
+        reference_pattern: str | None = None,
+    ):
+        super().__init__(
+            image_url=None,
+            reference_url=None,
+            pattern=pattern,
+            reference_pattern=reference_pattern,
+        )
+        self.images: list[NebulaImage] = []
+        self.groupname = groupname
+
+    @property
+    def name(self) -> str:
+        """
+        Return the name of the group.
+        """
+        return self.groupname

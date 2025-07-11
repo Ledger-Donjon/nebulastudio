@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 import sys
-from .nebulastudio import NebulaStudioApplication
+from .application import NebulaStudioApplication
 from .utils.colors import LedgerStyle, LedgerPalette
 
 
