@@ -10,6 +10,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QLineF
 from typing import TYPE_CHECKING
 import os
+import inspect
 
 if TYPE_CHECKING:
     from nebulastudio.nebulastudio import NebulaStudio
@@ -246,8 +247,10 @@ class Viewer(QGraphicsView):
         self.blockSignals(False)
 
     def do_scroll_to(self, x: int, y: int) -> None:
+        self.blockSignals(True)
         self.hscrollbar.setValue(x)
         self.vscrollbar.setValue(y)
+        self.blockSignals(False)
 
     def dragEnterEvent(self, event):
         """
