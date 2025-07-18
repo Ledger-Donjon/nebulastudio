@@ -3,13 +3,15 @@ from PyQt6.QtGui import QPixmap, QImage
 
 
 def normalize_to_8bits(
-    image: numpy.ndarray[tuple[int, int], numpy.dtype[numpy.uint64]],
+    image: numpy.ndarray[tuple[int, int], numpy.dtype[numpy.uint64]], min=None, max=None
 ):
     """
     Convert a 64-bit image to an 8-bits image.
     """
     # Normalize the image to the range [0, 255]
-    min, max = int(image.min()), int(image.max())
+    if min is None or max is None:
+        # If min and max are not provided, calculate them from the image
+        min, max = image.min(), image.max()
     image -= min
     if max != min:
         image *= 255
@@ -41,14 +43,18 @@ def apply_balances(
     return image
 
 
-def make_rgb_pixmap(image: numpy.ndarray, balances=(0.0, 1.0)) -> QPixmap:
+def make_rgb_pixmap(
+    image: numpy.ndarray, balances=(0.0, 1.0), minmax: tuple[int, int] | None = None
+) -> QPixmap:
     """
     Convert a numpy array to a QPixmap.
     """
     # Make a copy of the image to avoid modifying the original
     image = image.astype(numpy.uint64)
     # Convert the numpy array to a PIL image
-    image = normalize_to_8bits(image)
+    image = normalize_to_8bits(
+        image, min=minmax[0] if minmax else None, max=minmax[1] if minmax else None
+    )
     image = apply_balances(image, balances)
     qimage = QImage(
         image.tobytes(),

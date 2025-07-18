@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
 from .viewer import Viewer
 from PyQt6.QtGui import QKeySequence, QGuiApplication
 from .nebulaimage import NebulaImageGroup
-from .toolbars import NebulaStudioToolbar
+from .toolbars import NebulaStudioToolbox, ImageAlignmentToolbox
+
 import os
 import yaml
 from typing import TYPE_CHECKING, cast
@@ -169,17 +170,18 @@ class NebulaStudio(QMainWindow):
 
         self.stitching: dict | None = None
 
-        # Create a toolbar to adjust images properties
-        self.image_prop_toolbar = NebulaStudioToolbar(self)
-        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.image_prop_toolbar)
-        self.image_prop_toolbar.setAllowedAreas(
-            Qt.ToolBarArea.LeftToolBarArea | Qt.ToolBarArea.RightToolBarArea
+        # Create a toolbox to adjust images properties
+        self.image_prop_toolbox = NebulaStudioToolbox(self)
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea, self.image_prop_toolbox
         )
-        # Permit to detach the toolbar
-        self.image_prop_toolbar.setMovable(True)
-        self.image_prop_toolbar.setFloatable(True)
 
-        self.image_prop_toolbar.update_image_selector()
+        self.image_prop_toolbox.update_image_selector()
+
+        self.alignment_toolbox = ImageAlignmentToolbox(self)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.alignment_toolbox
+        )
 
     def refresh_viewers(self):
         # Refresh all viewers
@@ -327,7 +329,7 @@ class NebulaStudio(QMainWindow):
     @title.setter
     def title(self, value: str):
         self.setWindowTitle(value)
-        self.image_prop_toolbar.setWindowTitle(value + " - Image Parameters")
+        self.image_prop_toolbox.setWindowTitle(value + " - Image Parameters")
         print(f"Window title set to {value}")
 
     def load_config(self, settings: dict):
@@ -444,7 +446,7 @@ class NebulaStudio(QMainWindow):
                 c += 1
             r += 1
 
-        self.image_prop_toolbar.update_image_selector()
+        self.image_prop_toolbox.update_image_selector()
 
     def load_settings(self, settings: dict):
         if "title" in settings and not self.windowTitle() == settings["title"]:

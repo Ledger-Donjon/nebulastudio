@@ -13,6 +13,9 @@ class NebulaStudioApplication(QApplication):
         self.setOrganizationName("Ledger Donjon")
         # self.setOrganizationDomain("nebulastudio.org")
         self.setQuitOnLastWindowClosed(True)
+
+        self.settings_path = None
+
         try:
             self.load_file("nebulaconfig.yaml")
         except FileNotFoundError:

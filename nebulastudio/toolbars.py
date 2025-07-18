@@ -1,6 +1,7 @@
 import os
 from typing import TYPE_CHECKING
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QCloseEvent, QKeyEvent
 from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -10,7 +11,10 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QPushButton,
     QMenu,
-    QToolBar,
+    QDockWidget,
+    QGridLayout,
+    QVBoxLayout,
+    QWidget,
 )
 from .nebulaimage import NebulaImage, NebulaImageGroup
 from .viewer import Viewer
@@ -133,6 +137,28 @@ class NebulaImagePanel(QGroupBox):
         self.form = form
         self.setEnabled(False)
 
+        self.average_button = QPushButton("Average Images")
+        self.average_button.setToolTip("Average all the images to normalize.")
+        self.average_button.clicked.connect(self.on_average_button_clicked)
+        self.form.addRow("Average", self.average_button)
+
+    def on_average_button_clicked(self):
+        """
+        Handles the average button click event.
+        This method should implement the logic to average all images in the Nebula Studio.
+        """
+        # Get all images of the group
+        if not isinstance(image := self.image, NebulaImageGroup):
+            return
+        image.apply_average()
+
+        self.average = QLabel()
+        from .nebulaimage import make_rgb_pixmap
+
+        assert image.average_image is not None, "Average image should not be None"
+        self.average.setPixmap(make_rgb_pixmap(image.average_image))
+        self.average.show()
+
     @property
     def image(self) -> NebulaImage | None:
         """
@@ -235,6 +261,9 @@ class NebulaImagePanel(QGroupBox):
                 scene.update()
         self.update_ui()
 
+        # TODO REMOVE
+        self.images[0].align()
+
     def _on_pos_y_changed(self, value: int | float):
         """
         Handles the Y offset change event.
@@ -248,6 +277,9 @@ class NebulaImagePanel(QGroupBox):
             if scene := image.scene():
                 scene.update()
         self.update_ui()
+
+        # TODO REMOVE
+        self.images[0].align()
 
     def update_ui(self):
         """
@@ -290,6 +322,8 @@ class NebulaImagePanel(QGroupBox):
         self.offset_x_spinner.blockSignals(False)
         self.offset_y_spinner.blockSignals(False)
 
+        self.average_button.setEnabled(isinstance(self.image, NebulaImageGroup))
+
     def recenter_pos_sliders(self):
         """
         Re-centers the position sliders.
@@ -310,46 +344,34 @@ class NebulaImagePanel(QGroupBox):
         self.offset_y_slider.blockSignals(False)
 
 
-class NebulaStudioToolbar(QToolBar):
+class NebulaStudioToolbox(QDockWidget):
     """
     A panel for adjusting the properties of Nebula Studio.
     """
 
     def __init__(self, nebula_studio: "NebulaStudio"):
         """
-        Initializes the NebulaStudioToolbar instance.
+        Initializes the NebulaStudiotoolbox instance.
         """
         super().__init__()
         self.nebula_studio = nebula_studio
-        # self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
-        # self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.image_panel = NebulaImagePanel()
         self.setWindowTitle(nebula_studio.windowTitle() + " - Image Parameters")
-        self.setOrientation(Qt.Orientation.Vertical)
         # Dropdown list to select the image
-        self.title = QLabel(self.windowTitle())
-        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title_action = self.addWidget(self.title)
-        self.removeAction(self.title_action)
         self.image_selector = QPushButton("Selection")
-        self.image_selector_action = self.addWidget(self.image_selector)
-        self.addWidget(self.image_panel)
-
-        self.orientationChanged.connect(self.orientation_changed)
-        self.topLevelChanged.connect(self.floating_changed)
         self.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
-
-    def floating_changed(self, floating: bool):
-        if floating:
-            self.insertAction(self.image_selector_action, self.title_action)
-            self.title.setText(self.nebula_studio.windowTitle())
-        else:
-            self.removeAction(self.title_action)
-
-    def orientation_changed(self, orientation: Qt.Orientation):
-        """Force to be always vertical"""
-        if orientation == Qt.Orientation.Horizontal:
-            self.setOrientation(Qt.Orientation.Vertical)
+        self.setWidget(w := QWidget())
+        w.setLayout(vbox := QVBoxLayout())
+        vbox.addWidget(self.image_selector)
+        vbox.addWidget(self.image_panel)
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
 
     def update_image_selector(self):
         """
@@ -411,6 +433,167 @@ class NebulaStudioToolbar(QToolBar):
         """
         self.image_panel.image = image
 
-    # def closeEvent(self, a0: QCloseEvent | None) -> None:
 
-    #     return
+class ImageAlignmentToolbox(QDockWidget):
+    """
+    A toolbox for aligning images in Nebula Studio.
+    """
+
+    def __init__(self, nebula_studio: "NebulaStudio"):
+        """
+        Initializes the ImageAlignmentToolbox instance.
+        """
+        super().__init__("Image Alignment Toolbox")
+        self.nebula_studio = nebula_studio
+        self.setWindowFlags(
+            Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowMaximizeButtonHint
+        )
+        self.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+        self.l, self.r = QLabel(), QLabel()
+        self.d, self.s = QLabel(), QLabel()
+
+        vbox = QVBoxLayout()
+        grid = QGridLayout()
+
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.addStretch()
+        vbox.addLayout(grid)
+        vbox.addStretch()
+
+        self.l.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        self.r.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        self.d.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.s.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        grid.addWidget(self.l, 0, 0)
+        grid.addWidget(self.r, 0, 1)
+        grid.addWidget(self.d, 1, 0)
+        grid.addWidget(self.s, 1, 1)
+        self.message = QLabel("Result of alignment will be shown here.")
+        self.message.setAlignment(
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop
+        )
+        grid.addWidget(self.message, 2, 0, 1, 2)
+        grid.setRowStretch(2, 1)
+
+        self.setWidget(w := QWidget())
+        w.setLayout(vbox)
+
+        self._image: NebulaImage | None = None
+        self.hide()
+
+        self.topLevelChanged.connect(self.dockWidget_topLevelChanged)
+
+    def dockWidget_topLevelChanged(self, floating: bool):
+        """
+        Handles the top-level change event of the dock widget.
+        This method is used to set the window flags when the dock widget is floating.
+        """
+        if floating:
+            self.setWindowFlags(
+                Qt.WindowType.CustomizeWindowHint
+                | Qt.WindowType.Tool
+                | Qt.WindowType.WindowMinimizeButtonHint
+                | Qt.WindowType.WindowMaximizeButtonHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+            self.show()
+
+    @property
+    def image(self) -> NebulaImage | None:
+        """
+        Returns the image associated with this toolbox.
+        """
+        return self._image
+
+    @image.setter
+    def image(self, value: NebulaImage | None):
+        """
+        Sets the image associated with this toolbox.
+        """
+        self._image = value
+        if value is None:
+            self.hide()
+            return
+        self.show()
+
+    def keyPressEvent(self, a0: QKeyEvent | None) -> None:
+        # Detect left right, up down arrow keys
+        if a0 is not None and (image := self.image) is not None:
+            # Detect if shift is pressed
+            if a0.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                diff = 10
+            else:
+                diff = 1
+
+            # Detect the 'n' key
+            if a0.key() == Qt.Key.Key_N:
+                next_image = image.same_scenario_image(Qt.AlignmentFlag.AlignRight)
+                if next_image is not None:
+                    self.image = None
+                    next_image.last_alignment_direction = Qt.AlignmentFlag.AlignLeft
+                    self.image = next_image
+                else:
+                    # Go to left-most image in the same scenario
+                    curr_image = image
+                    while (
+                        next_image := curr_image.same_scenario_image(
+                            Qt.AlignmentFlag.AlignLeft
+                        )
+                    ) is not None:
+                        curr_image = next_image
+
+                    print("No next image found in the same scenario.")
+                    return super().keyPressEvent(a0)
+
+                return super().keyPressEvent(a0)
+
+            # Detect the 'm' key for auto-alignment
+            if a0.key() == Qt.Key.Key_M:
+                best_pos = init_pos = image.pos()
+                res = image.align()
+                if res is None:
+                    print("Alignment failed")
+                    return super().keyPressEvent(a0)
+
+                for x in range(-10 * diff, 11 * diff):
+                    for y in range(-10 * diff, 11 * diff):
+                        image.setPos(init_pos.x() + x, init_pos.y() + y)
+                        score = image.align()
+                        if score is not None and score < res:
+                            res = score
+                            best_pos = image.pos()
+                image.setPos(best_pos)
+                image.align()
+                return super().keyPressEvent(a0)
+
+            if a0.key() == Qt.Key.Key_Left:
+                image.setPos(image.pos().x() - diff, image.pos().y())
+                image.align()
+            elif a0.key() == Qt.Key.Key_Right:
+                image.setPos(image.pos().x() + diff, image.pos().y())
+                image.align()
+            elif a0.key() == Qt.Key.Key_Up:
+                image.setPos(image.pos().x(), image.pos().y() - diff)
+                image.align()
+            elif a0.key() == Qt.Key.Key_Down:
+                image.setPos(image.pos().x(), image.pos().y() + diff)
+                image.align()
+
+        return super().keyPressEvent(a0)
+
+    def closeEvent(self, event: QCloseEvent | None) -> None:
+        if self.image is not None:
+            # Reset the image to None when closing the toolbox
+            self.image.last_alignment_direction = None
+        self.image = None
+        return super().closeEvent(event)

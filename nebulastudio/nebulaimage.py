@@ -1,18 +1,17 @@
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QGraphicsItem,
     QGraphicsSceneMouseEvent,
     QGraphicsPixmapItem,
     QGraphicsSceneContextMenuEvent,
     QMenu,
-    QLabel,
 )
-from PyQt6.QtCore import Qt, QRectF, QRect
+from PyQt6.QtCore import Qt, QPointF
 from PIL import Image
 import os
 import numpy
 
-from .diff import make_rgb_pixmap, construct_diff_ndarray, normalize_to_8bits
+from .diff import make_rgb_pixmap, construct_diff_ndarray
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -47,13 +46,19 @@ class NebulaImage(QGraphicsPixmapItem):
 
         self.image = None
         self.reference_image = None
+        self.average_image = None
         self.diff_image = None
         self._balances = (0.0, 1.0)
+
+        # Used to store the min and max values of the whole scenario for normalization
+        self.minmax: tuple[int, int] | None = None
 
         # Populate image, reference image and diff image objects
         if self.image_url is not None:
             self.load_files(self.image_url, self.reference_url)
         self.update_pixmap()
+
+        self.last_alignment_direction = None
 
     @property
     def name(self) -> str:
@@ -105,20 +110,39 @@ class NebulaImage(QGraphicsPixmapItem):
             )
         )
 
-    def update_pixmap(self):
+    @property
+    def image_to_show(self) -> numpy.ndarray | None:
         """
-        Updates the pixmap with the current numpy image.
+        Returns the image to be displayed, either the diff image or the original image.
         """
         if self.image is None:
-            self.setPixmap(QPixmap())  # Clear the pixmap if no image is loaded
             return
 
-        self.setPixmap(
-            make_rgb_pixmap(
-                self.diff_image if self.diff_image is not None else self.image,
-                balances=self.balances,
+        # If the image is not loaded, use the average image if available
+        if self.diff_image is not None:
+            image_to_show = self.diff_image
+        elif self.average_image is not None:
+            image_to_show = self.image.astype(numpy.int64) - self.average_image.astype(
+                numpy.int64
             )
-        )
+            image_to_show = image_to_show.clip(0)
+        else:
+            image_to_show = self.image
+        return image_to_show
+
+    def update_pixmap(self):
+        """
+        Updates the pixmap with the numpy image to show.
+        """
+        if (img := self.image_to_show) is not None:
+            self.setPixmap(
+                make_rgb_pixmap(
+                    img,
+                    balances=self.balances,
+                )
+            )
+        else:
+            self.setPixmap(QPixmap())  # Clear the pixmap if no image is loaded
 
     @property
     def balances(self) -> tuple[float, float]:
@@ -142,17 +166,26 @@ class NebulaImage(QGraphicsPixmapItem):
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent | None) -> None:
         print(f"Double clicked on image: {self.name}")
-        if event and (ns := self.nebula_studio) is not None:
-            ns.image_prop_toolbar.image_panel.image = self
-            event.accept()  # Accept the event to prevent further processing
-            return
+        self.select_in_panel()
+        if event is not None:
+            event.accept()
         return super().mouseDoubleClickEvent(event)
+
+    def select_in_panel(self):
+        """
+        Selects the image in the image panel of the Nebula Studio.
+        """
+        if (ns := self.nebula_studio) is not None:
+            ns.image_prop_toolbox.image_panel.image = self
+        else:
+            print("Nebula Studio instance is not available.")
 
     # Context menu settings for the image
     def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent | None) -> None:
         """Handles the context menu event for the image."""
         if event is not None:
             menu = QMenu()
+            menu.addSection(f"{self.name} Alignment")
             menu.addAction("Align left", lambda: self.align(Qt.AlignmentFlag.AlignLeft))
             menu.addAction(
                 "Align right", lambda: self.align(Qt.AlignmentFlag.AlignRight)
@@ -168,16 +201,10 @@ class NebulaImage(QGraphicsPixmapItem):
             menu.exec(event.screenPos())
             event.accept()
 
-    def align(self, direction: Qt.AlignmentFlag):
+    def same_scenario_image(self, direction: Qt.AlignmentFlag):
         """
-        Aligns the image to the left, right, top, or bottom of the viewer.
-        This method is a placeholder and should be implemented with actual alignment logic.
+        Finds the image in the same scenario as this one, in the specified direction.
         """
-        if direction == Qt.AlignmentFlag.AlignCenter:
-            for image in self.siblings:
-                image.posOrigin = self.pos()
-            return
-
         if (v := self.viewer) is None or (ns := self.nebula_studio) is None:
             print("No viewer found for alignment.")
             return
@@ -196,18 +223,38 @@ class NebulaImage(QGraphicsPixmapItem):
 
         # Get image of the same group in the other viewer
         if v2 is None:
-            print("No viewer found for alignment.")
+            print(f"No viewer found in direction {direction}.")
             return
 
         image = None
         for image in v2.group.images:
             if any(s in self.scenarios for s in image.scenarios):
-                print(image.name, "is in the same scenario as", self.name)
                 break
 
         if image is None:
-            print("No image found in the same scenario.")
             return
+
+        return image
+
+    def align(self, direction: Qt.AlignmentFlag | None = None):
+        """
+        Aligns the image to the left, right, top, or bottom of the viewer.
+        This method is a placeholder and should be implemented with actual alignment logic.
+        """
+
+        if direction is None:
+            direction = self.last_alignment_direction
+        if direction is None:
+            print("No alignment direction specified.")
+            return
+
+        if direction == Qt.AlignmentFlag.AlignCenter:
+            for image in self.siblings:
+                image.setPos(self.pos())
+            return
+
+        self.select_in_panel()
+        self.last_alignment_direction = direction
 
         assert (ns := self.nebula_studio) is not None, (
             "NebulaStudio instance is not available"
@@ -215,89 +262,100 @@ class NebulaImage(QGraphicsPixmapItem):
         assert (d := ns.displacement_size_pixels) is not None
         dx, dy = d
 
+        image_left = self
+        image_right = self.same_scenario_image(direction)
+
+        if image_right is None:
+            print(f"No image found in the same scenario in direction {direction}.")
+            return
+
         # Get the image size
-        numpy_image = self.image
-        assert numpy_image is not None, "Image data is not available"
+        numpy_image_l = image_left.image
+        assert numpy_image_l is not None, "Image data is not available"
 
-        numpy_image2 = image.image
-        assert numpy_image2 is not None, "Image data is not available"
+        numpy_image_r = image_right.image
+        assert numpy_image_r is not None, "Image data is not available"
 
-        height, width = numpy_image.shape[:2]  # Get the height and width of the image
+        height, width = numpy_image_l.shape[:2]  # Get the height and width of the image
         assert type(height) is int and type(width) is int, (
             f"Image dimensions are not integers: height={height}, width={width}"
         )
 
         # Compute the cropping rectangle of the image
-        cropping_rect = QRectF(
-            0, 0, width, height
-        )  # Create a QRectF for the image size
-
-        image_left = self
-        image_right = image
+        cropping_origin = QPointF()
 
         # Consider the displacement
         if direction == Qt.AlignmentFlag.AlignRight:
-            cropping_rect.translate(dx, 0)
-            # image_left = self
-            # image_right = image
+            cropping_origin += QPointF(dx, 0)
         elif direction == Qt.AlignmentFlag.AlignLeft:
-            cropping_rect.translate(-dx, 0)
-            # image_right = self
-            # image_left = image
+            cropping_origin += QPointF(-dx, 0)
         elif direction == Qt.AlignmentFlag.AlignTop:
-            cropping_rect.translate(0, -dy)
-            # image_right = self
-            # image_left = image
+            cropping_origin += QPointF(0, -dy)
         elif direction == Qt.AlignmentFlag.AlignBottom:
-            cropping_rect.translate(0, dy)
+            cropping_origin += QPointF(0, dy)
 
-        # # Adjust the cropping rectangle to the current offset applied on the current image
-        cropping_rect.translate(-image_left.pos().x(), -image_left.pos().y())
+        # Adjust the cropping rectangle to the current offset applied on the current image
+        cropping_origin -= image_left.pos()
+        cropping_origin += image_right.pos()
 
-        # # Adjust the cropping rectangle to the current offset applied on the other image
-        cropping_rect.translate(image_right.pos().x(), image_right.pos().y())
+        cropping_width = width - abs(x := int(cropping_origin.x()))
+        cropping_height = height - abs(y := int(cropping_origin.y()))
 
-        # Crop the numpy array according to the cropping rectangle
-        if cropping_rect.width() <= 0 or cropping_rect.height() <= 0:
+        if cropping_width <= 0 or cropping_height <= 0:
             print("Cropping rectangle has zero width or height, cannot crop.")
             return
 
-        x = int(cropping_rect.x())
-        y = int(cropping_rect.y())
-
-        # FOR DEBUGGING PURPOSES
-        cropped_array = numpy_image[y:, x:, :]
+        cropped_array = numpy_image_l[
+            y if y >= 0 else 0 : height if y >= 0 else height + y,
+            x if x >= 0 else 0 : width if x >= 0 else width + x,
+            :,
+        ]
         cropped_pixmap = make_rgb_pixmap(cropped_array, balances=self.balances)
-        self.cropped_image = QLabel()
-        self.cropped_image.setWindowTitle(f"Cropped Image LEFT {cropped_array.shape}")
-        self.cropped_image.setPixmap(cropped_pixmap)
-        self.cropped_image.show()
-
-        cropped_array2 = numpy_image2[: height - y, : width - x, :]
+        cropped_array2 = numpy_image_r[
+            0 if y >= 0 else -y : height - y if y >= 0 else height,
+            0 if x >= 0 else -x : width - x if x >= 0 else width,
+            :,
+        ]
         cropped_pixmap2 = make_rgb_pixmap(cropped_array2, balances=self.balances)
-        self.cropped_image2 = QLabel()
-        self.cropped_image2.setWindowTitle(
-            f"Cropped Image RIGHT {cropped_array2.shape}"
+        cropped_diff = abs(
+            cropped_array.astype(numpy.int64) - (cropped_array2.astype(numpy.int64))
+        ).astype(numpy.uint64)
+        cropped_diff_pixmap = make_rgb_pixmap(cropped_diff, balances=self.balances)
+
+        stacked = numpy.stack([cropped_array, cropped_array2, cropped_array2], axis=2)
+        cropped_sum = stacked.reshape(width, height, 3).copy()
+        cropped_sum_pixmap = make_rgb_pixmap(cropped_sum, balances=self.balances)
+
+        panel = ns.alignment_toolbox
+        panel.image = self
+
+        panel.setWindowTitle(f"Result of alignment {self.name} with {image_right.name}")
+
+        panel.l.setPixmap(cropped_pixmap)
+        panel.r.setPixmap(cropped_pixmap2)
+        panel.s.setPixmap(cropped_sum_pixmap)
+        panel.d.setPixmap(cropped_diff_pixmap)
+
+        panel.show()
+        panel.message.setText(
+            f"Aligned {self.name} with {image_right.name} in direction {direction.name}, score: {cropped_diff.sum()}"
+            # Show the size of the diff image
         )
-        self.cropped_image2.setPixmap(cropped_pixmap2)
-        self.cropped_image2.show()
+        return cropped_diff.sum()
 
-        # if direction == Qt.AlignmentFlag.AlignLeft:
-        #     image_left = self
-        #     image_right = image
-
-        #     pos_left = image_left.pos().x()
-        #     pos_right = image_right.pos().x()
-
-        # elif direction == Qt.AlignmentFlag.AlignRight:
-        #     image_left = image
-        #     image_right = self
-
-        # # Get the rect to crop the first image
-
-        # if direction == Qt.AlignmentFlag.AlignLeft:
-        #     new_x = image.pos().x() - width - dx
-        #     new_y = image.pos().y()
+    @property
+    def next_viewer_image(self) -> "NebulaImage | None":
+        """
+        Returns the image in the next viewer.
+        """
+        if (v := self.viewer) is not None:
+            images = v.group.images
+            try:
+                index = images.index(self)
+                return images[index + 1] if index + 1 < len(images) else None
+            except ValueError:
+                return None
+        return None
 
     @property
     def settings(self) -> dict | None:
@@ -432,3 +490,36 @@ class NebulaImageGroup(NebulaImage):
         Return the name of the group.
         """
         return self.groupname
+
+    def apply_average(self):
+        """
+        Applies the average image to all images in the group.
+        """
+        self.average_image = (
+            numpy.array([image.image.copy() for image in self.images])
+            .mean(axis=0, dtype=numpy.float64)
+            .astype(numpy.uint64)
+        )
+
+        if self.average_image is None:
+            print("No average image available.")
+            return
+
+        _min, _max = (
+            self.images[0].image.min(),
+            self.images[1].image.max(),
+        )
+        for image in self.images:
+            if image.image is None:
+                continue
+            _min, _max = (
+                min(image.image.min(), _min),
+                max(image.image.max(), _max),
+            )  # Ensure the image is updated
+        # Update the average image for each image in the group
+
+        for image in self.images:
+            image.minmax = (_min, _max)
+            image.average_image = self.average_image
+            image.update_pixmap()
+            image.update_tooltip()
