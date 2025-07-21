@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
 from .viewer import Viewer
 from PyQt6.QtGui import QKeySequence, QGuiApplication
 from .nebulaimage import NebulaImageGroup
-from .toolbars import NebulaStudioToolbox, ImageAlignmentToolbox
+from .toolbars import NebulaStudioToolbox
+from .alignment import ImageAlignmentToolbox
 
 import os
 import yaml

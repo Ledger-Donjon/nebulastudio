@@ -262,86 +262,24 @@ class NebulaImage(QGraphicsPixmapItem):
         assert (d := ns.displacement_size_pixels) is not None
         dx, dy = d
 
-        image_left = self
         image_right = self.same_scenario_image(direction)
-
         if image_right is None:
-            print(f"No image found in the same scenario in direction {direction}.")
+            print(f"No image found in the same scenario in direction {direction.name}.")
             return
 
-        # Get the image size
-        numpy_image_l = image_left.image
-        assert numpy_image_l is not None, "Image data is not available"
-
-        numpy_image_r = image_right.image
-        assert numpy_image_r is not None, "Image data is not available"
-
-        height, width = numpy_image_l.shape[:2]  # Get the height and width of the image
-        assert type(height) is int and type(width) is int, (
-            f"Image dimensions are not integers: height={height}, width={width}"
-        )
-
-        # Compute the cropping rectangle of the image
-        cropping_origin = QPointF()
-
-        # Consider the displacement
         if direction == Qt.AlignmentFlag.AlignRight:
-            cropping_origin += QPointF(dx, 0)
+            cropping_origin = QPointF(dx, 0)
         elif direction == Qt.AlignmentFlag.AlignLeft:
-            cropping_origin += QPointF(-dx, 0)
+            cropping_origin = QPointF(-dx, 0)
         elif direction == Qt.AlignmentFlag.AlignTop:
-            cropping_origin += QPointF(0, -dy)
+            cropping_origin = QPointF(0, -dy)
         elif direction == Qt.AlignmentFlag.AlignBottom:
-            cropping_origin += QPointF(0, dy)
+            cropping_origin = QPointF(0, dy)
+        else:
+            cropping_origin = QPointF()
 
-        # Adjust the cropping rectangle to the current offset applied on the current image
-        cropping_origin -= image_left.pos()
-        cropping_origin += image_right.pos()
-
-        cropping_width = width - abs(x := int(cropping_origin.x()))
-        cropping_height = height - abs(y := int(cropping_origin.y()))
-
-        if cropping_width <= 0 or cropping_height <= 0:
-            print("Cropping rectangle has zero width or height, cannot crop.")
-            return
-
-        cropped_array = numpy_image_l[
-            y if y >= 0 else 0 : height if y >= 0 else height + y,
-            x if x >= 0 else 0 : width if x >= 0 else width + x,
-            :,
-        ]
-        cropped_pixmap = make_rgb_pixmap(cropped_array, balances=self.balances)
-        cropped_array2 = numpy_image_r[
-            0 if y >= 0 else -y : height - y if y >= 0 else height,
-            0 if x >= 0 else -x : width - x if x >= 0 else width,
-            :,
-        ]
-        cropped_pixmap2 = make_rgb_pixmap(cropped_array2, balances=self.balances)
-        cropped_diff = abs(
-            cropped_array.astype(numpy.int64) - (cropped_array2.astype(numpy.int64))
-        ).astype(numpy.uint64)
-        cropped_diff_pixmap = make_rgb_pixmap(cropped_diff, balances=self.balances)
-
-        stacked = numpy.stack([cropped_array, cropped_array2, cropped_array2], axis=2)
-        cropped_sum = stacked.reshape(width, height, 3).copy()
-        cropped_sum_pixmap = make_rgb_pixmap(cropped_sum, balances=self.balances)
-
-        panel = ns.alignment_toolbox
-        panel.image = self
-
-        panel.setWindowTitle(f"Result of alignment {self.name} with {image_right.name}")
-
-        panel.l.setPixmap(cropped_pixmap)
-        panel.r.setPixmap(cropped_pixmap2)
-        panel.s.setPixmap(cropped_sum_pixmap)
-        panel.d.setPixmap(cropped_diff_pixmap)
-
-        panel.show()
-        panel.message.setText(
-            f"Aligned {self.name} with {image_right.name} in direction {direction.name}, score: {cropped_diff.sum()}"
-            # Show the size of the diff image
-        )
-        return cropped_diff.sum()
+        ns.alignment_toolbox.set_images(self, image_right, cropping_origin)
+        return ns.alignment_toolbox.alignment_score
 
     @property
     def next_viewer_image(self) -> "NebulaImage | None":
@@ -383,7 +321,7 @@ class NebulaImage(QGraphicsPixmapItem):
         if "opacity" in value:
             self.setOpacity(value["opacity"])
         if "offset" in value:
-            self._pos = float(value["offset"][0]), float(value["offset"][1])
+            self.setPos(QPointF(float(value["offset"][0]), float(value["offset"][1])))
             self.update_pixmap()
         if "balances" in value:
             self.balances = tuple(value["balances"])
@@ -495,11 +433,9 @@ class NebulaImageGroup(NebulaImage):
         """
         Applies the average image to all images in the group.
         """
-        self.average_image = (
-            numpy.array([image.image.copy() for image in self.images])
-            .mean(axis=0, dtype=numpy.float64)
-            .astype(numpy.uint64)
-        )
+        self.average_image = numpy.median(
+            numpy.array([image.image for image in self.images]), axis=0
+        ).astype(numpy.uint64)
 
         if self.average_image is None:
             print("No average image available.")
