@@ -122,10 +122,10 @@ class NebulaImage(QGraphicsPixmapItem):
         if self.diff_image is not None:
             image_to_show = self.diff_image
         elif self.average_image is not None:
-            image_to_show = self.image.astype(numpy.int64) - self.average_image.astype(
-                numpy.int64
+            image_to_show = (
+                self.image.astype(numpy.int64) - self.average_image.astype(numpy.int64)
             )
-            image_to_show = image_to_show.clip(0)
+            image_to_show += image_to_show.min()
         else:
             image_to_show = self.image
         return image_to_show
@@ -433,6 +433,10 @@ class NebulaImageGroup(NebulaImage):
         """
         Applies the average image to all images in the group.
         """
+        if self.average_image is not None:
+            self.average_image = None
+            return
+
         self.average_image = numpy.median(
             numpy.array([image.image for image in self.images]), axis=0
         ).astype(numpy.uint64)
@@ -459,3 +463,51 @@ class NebulaImageGroup(NebulaImage):
             image.average_image = self.average_image
             image.update_pixmap()
             image.update_tooltip()
+
+    def export_images(self, path: str):
+        """
+        Stitch all the images of the group into a single image.
+        """
+
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+        viewer = self.images[0].viewer
+        displacement = viewer.nebula_studio.displacement_size_pixels
+        # Create a big image.
+        big_image = numpy.zeros((
+            displacement[0] * viewer.nebula_studio.rows + 1000,
+            displacement[1] * viewer.nebula_studio.columns + 1000,
+            3   
+        ), dtype=numpy.uint8)
+
+
+        for image in self.images:
+            if (im := image.image_to_show) is None:
+                continue
+
+            x = int(-image.pos().x() + im.shape[1] / 2 - displacement[0] / 2)
+            y = int(-image.pos().y() + im.shape[0] / 2 - displacement[1] / 2)
+
+
+            y_start = 0 if image.viewer.row == 0 else y
+            x_start = 0 if image.viewer.column == 0 else x
+
+            y_end = (y + displacement[1]) if image.viewer.row < viewer.nebula_studio.rows - 1 else im.shape[0]
+            x_end = (x + displacement[0]) if image.viewer.column < viewer.nebula_studio.columns - 1 else im.shape[1]
+
+            cropped = im[y_start : y_end, x_start : x_end]
+            print(cropped.shape)
+
+            y_global = displacement[1] * (image.viewer.row + 1)
+            x_global = displacement[0] * (image.viewer.column + 1)
+
+            if image.viewer.row == 0:
+                y_global -= y
+            if image.viewer.column == 0:
+                x_global -= x
+
+            big_image[y_global : y_global + (y_end - y_start), x_global : x_global + (x_end - x_start)] = cropped
+
+        # Save the big image
+        Image.fromarray(big_image).save(os.path.join(path, f"{self.name}.png"))

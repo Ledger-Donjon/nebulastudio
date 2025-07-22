@@ -142,6 +142,19 @@ class NebulaImagePanel(QGroupBox):
         self.average_button.clicked.connect(self.on_average_button_clicked)
         self.form.addRow("Shading", self.average_button)
 
+        self.export_button = QPushButton("Export")
+        self.export_button.setToolTip("Export the image to a file")
+        self.export_button.clicked.connect(self.on_export_button_clicked)
+        self.form.addRow("Export", self.export_button)
+
+    def on_export_button_clicked(self):
+        """
+        Handles the export button click event.
+        """
+        if not isinstance(image := self.image, NebulaImageGroup):
+            return
+        image.export_images(os.path.join(os.path.expanduser("~"), "Desktop", "export"))
+    
     def on_average_button_clicked(self):
         """
         Handles the average button click event.

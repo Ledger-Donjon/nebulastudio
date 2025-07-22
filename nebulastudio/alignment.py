@@ -1,6 +1,13 @@
 from typing import TYPE_CHECKING
-from PyQt6.QtCore import Qt, QPointF
-from PyQt6.QtGui import QKeyEvent, QCloseEvent, QPixmap
+from PyQt6.QtCore import Qt, QPointF, QEvent, QRect
+from PyQt6.QtGui import (
+    QKeyEvent,
+    QCloseEvent,
+    QMouseEvent,
+    QPixmap,
+    QEnterEvent,
+    QWheelEvent,
+)
 from PyQt6.QtWidgets import (
     QDockWidget,
     QGraphicsView,
@@ -14,6 +21,7 @@ from PyQt6.QtWidgets import (
 from .nebulaimage import NebulaImage
 from .diff import make_rgb_pixmap
 import numpy
+from .utils.colors import LedgerColors
 
 if TYPE_CHECKING:
     from .nebulastudio import NebulaStudio
@@ -24,11 +32,13 @@ class NebulaAlignmentView(QGraphicsView):
     A label for displaying alignment information in Nebula Studio.
     """
 
-    def __init__(self):
+    def __init__(self, toolbox: "ImageAlignmentToolbox"):
         """
         Initializes the NebulaAlignmentView instance.
         """
-        super().__init__()
+        super().__init__(toolbox)
+        self.toolbox = toolbox
+
         self.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
         self.setStyleSheet("background-color: lightgray;")
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
@@ -39,10 +49,21 @@ class NebulaAlignmentView(QGraphicsView):
         self.setScene(scene)
         self.pixmap_item = QGraphicsPixmapItem()
         scene.addItem(self.pixmap_item)
-        # Prevent user interaction
-        self.setInteractive(False)
-        # Prevent to capture keyboards
-        self.setEnabled(False)
+
+        alignment_kernel = scene.addRect(
+            0,
+            0,
+            100,
+            100,
+            pen=LedgerColors.SafetyOrange.value,
+            brush=Qt.GlobalColor.transparent,
+        )
+        assert alignment_kernel is not None, "Alignment kernel could not be created"
+        alignment_kernel.setZValue(1000)  # Ensure it is on top of the pixmap
+        alignment_kernel.setVisible(False)  # Initially hidden
+        self.alignment_kernel = alignment_kernel
+
+        self.setMouseTracking(True)  # Enable mouse tracking to detect mouse movements
 
     @property
     def pixmap(self) -> QPixmap:
@@ -57,16 +78,99 @@ class NebulaAlignmentView(QGraphicsView):
         Sets the pixmap for the alignment view.
         """
         self.pixmap_item.setPixmap(value)
-        # self.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+        # Set the scene rectangle to fit the pixmap
+        if scene := self.scene():
+            scene.setSceneRect(self.pixmap_item.boundingRect())
 
-    def enterEvent(self, event):
+    @property
+    def kernel_size(self) -> int:
+        """
+        Returns the size of the alignment kernel.
+        """
+        return self.toolbox.kernel_size
+
+    def update_alignment_kernel(self, position: QPointF | None = None):
+        """
+        Updates the position of the alignment kernel rectangle based on the mouse position.
+        """
+        if position is None:
+            position = self.alignment_kernel.rect().center()
+        self.alignment_kernel.setRect(
+            position.x() - self.kernel_size / 2,
+            position.y() - self.kernel_size / 2,
+            self.kernel_size,
+            self.kernel_size,
+        )
+
+    def enterEvent(self, event: QEnterEvent | None) -> None:
         """
         Handles the mouse enter event.
         """
-        self.setStyleSheet("background-color: lightblue;")
-        # Affiche un rectangle au niveau du curseur de 10px de large et 10px de haut
+        if event is None:
+            return super().enterEvent(event)
 
+        self.setStyleSheet("background-color: lightblue;")
+        position = int(event.position().x()), int(event.position().y())
+        position = self.mapToScene(*position)
+        self.update_alignment_kernel(position)
+        self.alignment_kernel.setVisible(True)
         super().enterEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+        if event is None:
+            return super().mousePressEvent(event)
+        # Update the alignment kernel position
+        position = self.mapToScene(event.pos())
+        self.update_alignment_kernel(position)
+        self.alignment_kernel.setVisible(True)
+        self.setMouseTracking(True)  # Enable mouse tracking on mouse press
+        # Remove cursor
+        self.setCursor(Qt.CursorShape.BlankCursor)
+        return super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:
+        if event is None:
+            return super().mouseMoveEvent(event)
+        # Update the alignment kernel position
+        position = self.mapToScene(event.pos())
+        self.update_alignment_kernel(position)
+        self.setCursor(Qt.CursorShape.BlankCursor)
+        self.alignment_kernel.setVisible(True)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, a0: QEvent | None) -> None:
+        """
+        Handles the mouse leave event.
+        """
+        if a0 is None:
+            return super().leaveEvent(a0)
+        # Hide the alignment kernel rectangle
+        self.alignment_kernel.setVisible(False)
+        # Restore the cursor
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().leaveEvent(a0)
+
+    def keyPressEvent(self, event: QKeyEvent | None) -> None:
+        if event is not None:
+            event.ignore()  # Explicitly ignore
+
+    def wheelEvent(self, event: QWheelEvent | None) -> None:
+        if event is None:
+            return super().wheelEvent(event)
+
+        # Check if shift is pressed
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            # If shift is pressed, ignore the wheel event
+            event.ignore()
+            return
+        return super().wheelEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
+        if not self.alignment_kernel:
+            return super().mouseDoubleClickEvent(event)
+        self.toolbox.find_best_alignment(
+            kernel_rect=self.alignment_kernel.rect().toRect()
+        )
 
 
 class ImageAlignmentToolbox(QDockWidget):
@@ -93,8 +197,8 @@ class ImageAlignmentToolbox(QDockWidget):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
-        self.l, self.r = NebulaAlignmentView(), NebulaAlignmentView()
-        self.d, self.s = NebulaAlignmentView(), NebulaAlignmentView()
+        self.l, self.r = NebulaAlignmentView(self), NebulaAlignmentView(self)
+        self.d, self.s = NebulaAlignmentView(self), NebulaAlignmentView(self)
 
         vbox = QVBoxLayout()
         grid = QGridLayout()
@@ -125,14 +229,14 @@ class ImageAlignmentToolbox(QDockWidget):
 
         self.image: NebulaImage | None = None
         self.image_other: NebulaImage | None = None
+        self.alignment_score = numpy.inf
+        self.direction: Qt.AlignmentFlag | None = None
         self.hide()
 
         self.topLevelChanged.connect(self.dockWidget_topLevelChanged)
 
         # Initialize kernel size for alignment in pixels
         self.kernel_size = 10
-
-        self.alignment_score = numpy.inf
 
     def dockWidget_topLevelChanged(self, floating: bool):
         """
@@ -222,6 +326,8 @@ class ImageAlignmentToolbox(QDockWidget):
             self.image.last_alignment_direction = None
         self.image = None
         self.image_other = None
+        self.alignment_score = numpy.inf
+        self.direction = None
         self.hide()
         return super().closeEvent(event)
 
@@ -229,6 +335,16 @@ class ImageAlignmentToolbox(QDockWidget):
         self, image_left: NebulaImage, image_right: NebulaImage, offset: QPointF
     ):
         self.image = image_left
+        self.image_other = image_right
+        if (dx := offset.x()) > 0:
+            direction = Qt.AlignmentFlag.AlignRight
+        elif dx < 0:
+            direction = Qt.AlignmentFlag.AlignLeft
+        elif offset.y() > 0:
+            direction = Qt.AlignmentFlag.AlignBottom
+        else:
+            direction = Qt.AlignmentFlag.AlignTop
+        self.direction = direction
 
         # Get the image size
         numpy_image_l = image_left.image_to_show
@@ -294,19 +410,68 @@ class ImageAlignmentToolbox(QDockWidget):
         self.s.pixmap = cropped_sum_pixmap
         self.d.pixmap = cropped_diff_pixmap
 
-        self.show()
-
-        if (dx := offset.x()) > 0:
-            direction = Qt.AlignmentFlag.AlignRight
-        elif dx < 0:
-            direction = Qt.AlignmentFlag.AlignLeft
-        elif (dy := offset.y()) > 0:
-            direction = Qt.AlignmentFlag.AlignBottom
-        else:
-            direction = Qt.AlignmentFlag.AlignTop
-
         self.alignment_score = cropped_diff.sum()
         self.message.setText(
             f"Aligned {image_left.name} with {image_right.name} in direction {direction.name}, score: {self.alignment_score}"
-            # Show the size of the diff image
         )
+
+        self.show()
+
+    def wheelEvent(self, a0: QWheelEvent | None) -> None:
+        # Handle the wheel event to augment or reduce the kernel size
+        if a0 is None:
+            return super().wheelEvent(a0)
+        if a0.angleDelta().y() > 0:
+            self.kernel_size += 1
+        else:
+            if self.kernel_size > 1:
+                self.kernel_size -= 1
+
+        for view in (self.l, self.r, self.d, self.s):
+            view.update_alignment_kernel()
+
+    def find_best_alignment(self, kernel_rect: QRect | None = None):
+        """
+        Finds the best alignment for the images based on the current kernel size.
+        """
+        if (
+            self.image is None
+            or self.image_other is None
+            or self.image.image_to_show is None
+            or self.image_other.image_to_show is None
+            or self.image.image is None
+            or self.image_other.image is None
+        ):
+            print("No images set for alignment.")
+            return
+
+        if kernel_rect is None:
+            # We use the integrality of the image
+            sub_image = self.image.image_to_show
+            sub_image_other = self.image_other.image_to_show
+        else:
+            # We use the kernel rectangle to crop the image
+            sub_image = self.image.image[
+                kernel_rect.top() : kernel_rect.bottom(),
+                kernel_rect.left() : kernel_rect.right(),
+            ]
+            sub_image_other = self.image_other.image[
+                kernel_rect.top() : kernel_rect.bottom(),
+                kernel_rect.left() : kernel_rect.right(),
+            ]
+
+        print(
+            f"Sub-image size: {sub_image.shape}, Sub-image other size: {sub_image_other.shape}"
+        )
+
+        label1 = QLabel("Left Image")
+        label1.setPixmap(make_rgb_pixmap(sub_image, balances=self.image.balances))
+        label2 = QLabel("Right Image")
+        label2.setPixmap(
+            make_rgb_pixmap(sub_image_other, balances=self.image_other.balances)
+        )
+        self.res = QWidget()
+        res_layout = QVBoxLayout(self.res)
+        res_layout.addWidget(label1)
+        res_layout.addWidget(label2)
+        self.res.show()
