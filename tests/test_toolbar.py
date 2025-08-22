@@ -14,7 +14,7 @@ def window(app):
 
 
 def test_window_flags(window):
-    flags = window.image_prop_toolbox.windowFlags()
+    flags = window.image_prop_dock_widgets[0].windowFlags()
     type = flags & Qt.WindowType.WindowType_Mask
 
     if type == Qt.WindowType.Window:

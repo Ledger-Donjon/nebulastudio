@@ -142,6 +142,13 @@ class NebulaImagePanel(QGroupBox):
         self.average_button.clicked.connect(self.on_average_button_clicked)
         self.form.addRow("Shading", self.average_button)
 
+        self.uniform_button = QPushButton("Uniform")
+        self.uniform_button.setToolTip(
+            "Apply the min and max values of all images to all images of this group for unifo."
+        )
+        self.uniform_button.clicked.connect(self.on_uniform_button_clicked)
+        self.form.addRow("Uniform", self.uniform_button)
+
         self.export_button = QPushButton("Export")
         self.export_button.setToolTip("Export the image to a file")
         self.export_button.clicked.connect(self.on_export_button_clicked)
@@ -154,7 +161,15 @@ class NebulaImagePanel(QGroupBox):
         if not isinstance(image := self.image, NebulaImageGroup):
             return
         image.export_images(os.path.join(os.path.expanduser("~"), "Desktop", "export"))
-    
+
+    def on_uniform_button_clicked(self):
+        """
+        Handles the uniform button click event.
+        """
+        if not isinstance(image := self.image, NebulaImageGroup):
+            return
+        image.apply_minmax()
+
     def on_average_button_clicked(self):
         """
         Handles the average button click event.
@@ -369,7 +384,7 @@ class NebulaStudioToolbox(QDockWidget):
         super().__init__()
         self.nebula_studio = nebula_studio
         self.image_panel = NebulaImagePanel()
-        self.setWindowTitle(nebula_studio.windowTitle() + " - Image Parameters")
+        self.setWindowTitle(nebula_studio.windowTitle())
         # Dropdown list to select the image
         self.image_selector = QPushButton("Selection")
         self.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
@@ -384,6 +399,7 @@ class NebulaStudioToolbox(QDockWidget):
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
 
     def update_image_selector(self):
@@ -445,3 +461,4 @@ class NebulaStudioToolbox(QDockWidget):
         Handles the image selection event.
         """
         self.image_panel.image = image
+        self.setWindowTitle(self.nebula_studio.windowTitle() + " - " + image.name)

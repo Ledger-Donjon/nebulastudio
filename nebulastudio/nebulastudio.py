@@ -169,15 +169,19 @@ class NebulaStudio(QMainWindow):
             self.apply_stitch_zoom,
         )
 
+        image_prop_menu = menu.addMenu("&Image Properties")
+        assert image_prop_menu is not None
+        image_prop_menu.addAction(
+            "&New Image Property Panel",
+            QKeySequence("Ctrl+I"),
+            self.new_image_setting_panel,
+        )
+
         self.stitching: dict | None = None
 
         # Create a toolbox to adjust images properties
-        self.image_prop_toolbox = NebulaStudioToolbox(self)
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea, self.image_prop_toolbox
-        )
-
-        self.image_prop_toolbox.update_image_selector()
+        self.image_prop_dock_widgets = list[NebulaStudioToolbox]()
+        self.new_image_setting_panel()
 
         self.alignment_toolbox = ImageAlignmentToolbox(self)
         self.addDockWidget(
@@ -330,7 +334,7 @@ class NebulaStudio(QMainWindow):
     @title.setter
     def title(self, value: str):
         self.setWindowTitle(value)
-        self.image_prop_toolbox.setWindowTitle(value + " - Image Parameters")
+        [dw.setWindowTitle(value) for dw in self.image_prop_dock_widgets]
         print(f"Window title set to {value}")
 
     def load_config(self, settings: dict):
@@ -447,7 +451,8 @@ class NebulaStudio(QMainWindow):
                 c += 1
             r += 1
 
-        self.image_prop_toolbox.update_image_selector()
+        for dw in self.image_prop_dock_widgets:
+            dw.update_image_selector()
 
     def load_settings(self, settings: dict):
         if "title" in settings and not self.windowTitle() == settings["title"]:
@@ -574,6 +579,12 @@ class NebulaStudio(QMainWindow):
             viewer.set_reticula_color(
                 self.RETICULA_COLORS[self.current_reticula_color_index]
             )
+
+    def new_image_setting_panel(self):
+        dw = NebulaStudioToolbox(self)
+        self.image_prop_dock_widgets.append(dw)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dw)
+        dw.update_image_selector()
 
     def new_viewer(
         self, path: str | None = None, row: int = 0, column: int = 0

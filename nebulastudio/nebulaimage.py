@@ -122,8 +122,8 @@ class NebulaImage(QGraphicsPixmapItem):
         if self.diff_image is not None:
             image_to_show = self.diff_image
         elif self.average_image is not None:
-            image_to_show = (
-                self.image.astype(numpy.int64) - self.average_image.astype(numpy.int64)
+            image_to_show = self.image.astype(numpy.int64) - self.average_image.astype(
+                numpy.int64
             )
             image_to_show += image_to_show.min()
         else:
@@ -139,6 +139,7 @@ class NebulaImage(QGraphicsPixmapItem):
                 make_rgb_pixmap(
                     img,
                     balances=self.balances,
+                    minmax=self.minmax,
                 )
             )
         else:
@@ -176,7 +177,7 @@ class NebulaImage(QGraphicsPixmapItem):
         Selects the image in the image panel of the Nebula Studio.
         """
         if (ns := self.nebula_studio) is not None:
-            ns.image_prop_toolbox.image_panel.image = self
+            ns.image_prop_dock_widgets[0].image_panel.image = self
         else:
             print("Nebula Studio instance is not available.")
 
@@ -429,6 +430,22 @@ class NebulaImageGroup(NebulaImage):
         """
         return self.groupname
 
+    def apply_minmax(self):
+        """
+        Applies the min and max values of the images in the group to all images in the group.
+        """
+        _min, _max = (
+            min(image.image.min() for image in self.images if image.image is not None),
+            max(image.image.max() for image in self.images if image.image is not None),
+        )
+        print(f"Applying minmax {_min} {_max} to {len(self.images)} images")
+        for image in self.images:
+            if image.image is None:
+                continue
+            image.minmax = (_min, _max)
+            image.update_pixmap()
+            image.update_tooltip()
+
     def apply_average(self):
         """
         Applies the average image to all images in the group.
@@ -446,23 +463,15 @@ class NebulaImageGroup(NebulaImage):
             return
 
         _min, _max = (
-            self.images[0].image.min(),
-            self.images[1].image.max(),
+            min(image.image.min() for image in self.images if image.image is not None),
+            max(image.image.max() for image in self.images if image.image is not None),
         )
-        for image in self.images:
-            if image.image is None:
-                continue
-            _min, _max = (
-                min(image.image.min(), _min),
-                max(image.image.max(), _max),
-            )  # Ensure the image is updated
         # Update the average image for each image in the group
 
         for image in self.images:
             image.minmax = (_min, _max)
             image.average_image = self.average_image
             image.update_pixmap()
-            image.update_tooltip()
 
     def export_images(self, path: str):
         """
@@ -475,12 +484,14 @@ class NebulaImageGroup(NebulaImage):
         viewer = self.images[0].viewer
         displacement = viewer.nebula_studio.displacement_size_pixels
         # Create a big image.
-        big_image = numpy.zeros((
-            displacement[0] * viewer.nebula_studio.rows + 1000,
-            displacement[1] * viewer.nebula_studio.columns + 1000,
-            3   
-        ), dtype=numpy.uint8)
-
+        big_image = numpy.zeros(
+            (
+                displacement[0] * viewer.nebula_studio.rows + 1000,
+                displacement[1] * viewer.nebula_studio.columns + 1000,
+                3,
+            ),
+            dtype=numpy.uint8,
+        )
 
         for image in self.images:
             if (im := image.image_to_show) is None:
@@ -489,14 +500,21 @@ class NebulaImageGroup(NebulaImage):
             x = int(-image.pos().x() + im.shape[1] / 2 - displacement[0] / 2)
             y = int(-image.pos().y() + im.shape[0] / 2 - displacement[1] / 2)
 
-
             y_start = 0 if image.viewer.row == 0 else y
             x_start = 0 if image.viewer.column == 0 else x
 
-            y_end = (y + displacement[1]) if image.viewer.row < viewer.nebula_studio.rows - 1 else im.shape[0]
-            x_end = (x + displacement[0]) if image.viewer.column < viewer.nebula_studio.columns - 1 else im.shape[1]
+            y_end = (
+                (y + displacement[1])
+                if image.viewer.row < viewer.nebula_studio.rows - 1
+                else im.shape[0]
+            )
+            x_end = (
+                (x + displacement[0])
+                if image.viewer.column < viewer.nebula_studio.columns - 1
+                else im.shape[1]
+            )
 
-            cropped = im[y_start : y_end, x_start : x_end]
+            cropped = im[y_start:y_end, x_start:x_end]
             print(cropped.shape)
 
             y_global = displacement[1] * (image.viewer.row + 1)
@@ -507,7 +525,10 @@ class NebulaImageGroup(NebulaImage):
             if image.viewer.column == 0:
                 x_global -= x
 
-            big_image[y_global : y_global + (y_end - y_start), x_global : x_global + (x_end - x_start)] = cropped
+            big_image[
+                y_global : y_global + (y_end - y_start),
+                x_global : x_global + (x_end - x_start),
+            ] = cropped
 
         # Save the big image
         Image.fromarray(big_image).save(os.path.join(path, f"{self.name}.png"))
