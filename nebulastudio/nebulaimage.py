@@ -430,19 +430,30 @@ class NebulaImageGroup(NebulaImage):
         """
         return self.groupname
 
-    def apply_minmax(self):
+    def apply_minmax(self, uniform: bool = False):
         """
         Applies the min and max values of the images in the group to all images in the group.
         """
-        _min, _max = (
-            min(image.image.min() for image in self.images if image.image is not None),
-            max(image.image.max() for image in self.images if image.image is not None),
-        )
-        print(f"Applying minmax {_min} {_max} to {len(self.images)} images")
+        if uniform:
+            minmax = (
+                min(
+                    image.image.min()
+                    for image in self.images
+                    if image.image is not None
+                ),
+                max(
+                    image.image.max()
+                    for image in self.images
+                    if image.image is not None
+                ),
+            )
+        else:
+            minmax = None
+        print(f"Applying minmax {minmax} to {len(self.images)} images")
         for image in self.images:
             if image.image is None:
                 continue
-            image.minmax = (_min, _max)
+            image.minmax = minmax
             image.update_pixmap()
             image.update_tooltip()
 

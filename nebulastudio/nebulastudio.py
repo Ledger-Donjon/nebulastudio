@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
 from .viewer import Viewer
 from PyQt6.QtGui import QKeySequence, QGuiApplication
 from .nebulaimage import NebulaImageGroup
-from .toolbars import NebulaStudioToolbox
+from .dockwidgets.images_properties import ImagesPropertiesDockWidget
+from .dockwidgets.viewers_selection import ViewersSelectionDockWidget
 from .alignment import ImageAlignmentToolbox
 
 import os
@@ -180,12 +181,18 @@ class NebulaStudio(QMainWindow):
         self.stitching: dict | None = None
 
         # Create a toolbox to adjust images properties
-        self.image_prop_dock_widgets = list[NebulaStudioToolbox]()
+        self.image_prop_dock_widgets = list[ImagesPropertiesDockWidget]()
         self.new_image_setting_panel()
 
         self.alignment_toolbox = ImageAlignmentToolbox(self)
         self.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea, self.alignment_toolbox
+        )
+
+        # Viewers selection dock widget (show/hide viewers by ranges)
+        self.viewers_selection_dock_widget = ViewersSelectionDockWidget(self)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.viewers_selection_dock_widget
         )
 
     def refresh_viewers(self):
@@ -519,6 +526,9 @@ class NebulaStudio(QMainWindow):
         for r in r_range:
             for c in c_range:
                 self.new_viewer(row=r, column=c)
+        # Sync selection ranges and visibility
+        if hasattr(self, "viewers_selection_dock_widget"):
+            self.viewers_selection_dock_widget.sync_ranges()
 
     def remove_viewer_line(self, delete_row: bool = True):
         # Remove a line of viewers from the layout
@@ -544,6 +554,9 @@ class NebulaStudio(QMainWindow):
                     self.viewers_layout.removeItem(item)
                     self.viewers.remove(viewer)
                     viewer.deleteLater()
+
+        # Sync selection ranges and visibility
+        self.viewers_selection_dock_widget.sync_ranges()
 
     def show_hide_cursor(self):
         if QGuiApplication.overrideCursor() is None:
@@ -581,7 +594,7 @@ class NebulaStudio(QMainWindow):
             )
 
     def new_image_setting_panel(self):
-        dw = NebulaStudioToolbox(self)
+        dw = ImagesPropertiesDockWidget(self)
         self.image_prop_dock_widgets.append(dw)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dw)
         dw.update_image_selector()
@@ -604,6 +617,28 @@ class NebulaStudio(QMainWindow):
         self.columns = max(self.columns, column + 1)
 
         return viewer
+
+    def update_viewers_visibility(
+        self, row_min: int, row_max: int, col_min: int, col_max: int
+    ) -> None:
+        # Clamp values to current grid size
+        row_min = max(0, min(row_min, max(self.rows - 1, 0)))
+        row_max = max(0, min(row_max, max(self.rows - 1, 0)))
+        col_min = max(0, min(col_min, max(self.columns - 1, 0)))
+        col_max = max(0, min(col_max, max(self.columns - 1, 0)))
+
+        if row_min > row_max:
+            row_min, row_max = row_max, row_min
+        if col_min > col_max:
+            col_min, col_max = col_max, col_min
+
+        for r in range(self.rows):
+            for c in range(self.columns):
+                viewer = self.viewer_at(r, c, create=False)
+                if viewer is None:
+                    continue
+                visible = (row_min <= r <= row_max) and (col_min <= c <= col_max)
+                viewer.setVisible(visible)
 
     def scroll_all_viewers_to(self, x: int, y: int):
         for viewer in self.viewers:

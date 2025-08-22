@@ -14,14 +14,14 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from .nebulaimage import NebulaImage, NebulaImageGroup
-from .viewer import Viewer
+from ..nebulaimage import NebulaImage, NebulaImageGroup, make_rgb_pixmap
+from ..viewer import Viewer
 
 if TYPE_CHECKING:
-    from .nebulastudio import NebulaStudio
+    from ..nebulastudio import NebulaStudio
 
 
-class NebulaImagePanel(QGroupBox):
+class ImagePropertiesPanel(QGroupBox):
     """
     A panel for adjusting an image in Nebula Studio.
     """
@@ -143,10 +143,11 @@ class NebulaImagePanel(QGroupBox):
         self.form.addRow("Shading", self.average_button)
 
         self.uniform_button = QPushButton("Uniform")
+        self.uniform_button.setCheckable(True)
         self.uniform_button.setToolTip(
-            "Apply the min and max values of all images to all images of this group for unifo."
+            "Apply the min and max values of all images to all images of this group for uniform."
         )
-        self.uniform_button.clicked.connect(self.on_uniform_button_clicked)
+        self.uniform_button.toggled.connect(self.on_uniform_button_clicked)
         self.form.addRow("Uniform", self.uniform_button)
 
         self.export_button = QPushButton("Export")
@@ -162,13 +163,13 @@ class NebulaImagePanel(QGroupBox):
             return
         image.export_images(os.path.join(os.path.expanduser("~"), "Desktop", "export"))
 
-    def on_uniform_button_clicked(self):
+    def on_uniform_button_clicked(self, checked: bool):
         """
         Handles the uniform button click event.
         """
         if not isinstance(image := self.image, NebulaImageGroup):
             return
-        image.apply_minmax()
+        image.apply_minmax(checked)
 
     def on_average_button_clicked(self):
         """
@@ -181,7 +182,6 @@ class NebulaImagePanel(QGroupBox):
         image.apply_average()
 
         self.average = QLabel()
-        from .nebulaimage import make_rgb_pixmap
 
         assert image.average_image is not None, "Average image should not be None"
         self.average.setPixmap(make_rgb_pixmap(image.average_image))
@@ -372,7 +372,7 @@ class NebulaImagePanel(QGroupBox):
         self.offset_y_slider.blockSignals(False)
 
 
-class NebulaStudioToolbox(QDockWidget):
+class ImagesPropertiesDockWidget(QDockWidget):
     """
     A panel for adjusting the properties of Nebula Studio.
     """
@@ -383,7 +383,7 @@ class NebulaStudioToolbox(QDockWidget):
         """
         super().__init__()
         self.nebula_studio = nebula_studio
-        self.image_panel = NebulaImagePanel()
+        self.image_panel = ImagePropertiesPanel()
         self.setWindowTitle(nebula_studio.windowTitle())
         # Dropdown list to select the image
         self.image_selector = QPushButton("Selection")
@@ -436,6 +436,7 @@ class NebulaStudioToolbox(QDockWidget):
                     "All images",
                     lambda img=group: self.on_image_selected(img),
                 )
+                viewer_menu.addSeparator()
                 for image in group.images:
                     viewer_menu.addAction(
                         image.name,
@@ -449,6 +450,7 @@ class NebulaStudioToolbox(QDockWidget):
                 "All images",
                 lambda img=scenario: self.on_image_selected(img),
             )
+            scenario_menu.addSeparator()
             for image in scenario.images:
                 scenario_menu.addAction(
                     image.name,
