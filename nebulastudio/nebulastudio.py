@@ -23,11 +23,11 @@ from PyQt6.QtGui import QKeySequence, QGuiApplication
 from .nebulaimage import NebulaImageGroup
 from .dockwidgets.images_properties import ImagesPropertiesDockWidget
 from .dockwidgets.viewers_selection import ViewersSelectionDockWidget
-from .alignment import ImageAlignmentToolbox
+from .dockwidgets.image_alignment import ImageAlignmentDockWidget
 
 import os
 import yaml
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, Any
 
 if TYPE_CHECKING:
     from .application import NebulaStudioApplication
@@ -87,6 +87,11 @@ class NebulaStudio(QMainWindow):
         # Track internally the number of rows and columns
         self.rows = 0
         self.columns = 0
+        # Track visible rows/columns range (inclusive)
+        self.visible_row_min = 0
+        self.visible_row_max = 0
+        self.visible_col_min = 0
+        self.visible_col_max = 0
 
         # List of viewers
         self.viewers: list[Viewer] = []
@@ -94,6 +99,12 @@ class NebulaStudio(QMainWindow):
 
         assert self.rows == 1
         assert self.columns == 1
+
+        # Initialize visible range to all
+        self.visible_row_min = 0
+        self.visible_row_max = self.rows - 1
+        self.visible_col_min = 0
+        self.visible_col_max = self.columns - 1
 
         self.setAcceptDrops(True)
 
@@ -178,16 +189,13 @@ class NebulaStudio(QMainWindow):
             self.new_image_setting_panel,
         )
 
-        self.stitching: dict | None = None
+        self.stitching: dict[str, Any] | None = None
 
-        # Create a toolbox to adjust images properties
+        # Create a group of dockwidgets to adjust images properties
         self.image_prop_dock_widgets = list[ImagesPropertiesDockWidget]()
-        self.new_image_setting_panel()
 
-        self.alignment_toolbox = ImageAlignmentToolbox(self)
-        self.addDockWidget(
-            Qt.DockWidgetArea.RightDockWidgetArea, self.alignment_toolbox
-        )
+        self.alignment_toolbox = ImageAlignmentDockWidget(self)
+        self.addDockWidget(Qt.DockWidgetArea.NoDockWidgetArea, self.alignment_toolbox)
 
         # Viewers selection dock widget (show/hide viewers by ranges)
         self.viewers_selection_dock_widget = ViewersSelectionDockWidget(self)
@@ -263,8 +271,11 @@ class NebulaStudio(QMainWindow):
         container = self.viewers_widget
         assert container is not None
         # The container of the images must have a size proportional to:
-        container_w = viewrect_w * self.columns
-        container_h = viewrect_h * self.rows
+        # Use only visible rows/columns for aspect ratio
+        num_visible_rows = max(1, self.visible_row_max - self.visible_row_min + 1)
+        num_visible_cols = max(1, self.visible_col_max - self.visible_col_min + 1)
+        container_w = viewrect_w * num_visible_cols
+        container_h = viewrect_h * num_visible_rows
 
         # Eg a width/height ratio:
         ratio = container_w / container_h
@@ -279,7 +290,7 @@ class NebulaStudio(QMainWindow):
         # The viewers must shows a portion of the image of height 'viewrect_h'
         # Its actual size is 'height'
         # To show the same portion of image, we need to set the zoom factor
-        zoom_factor = (height / self.rows) / viewrect_h
+        zoom_factor = (height / num_visible_rows) / viewrect_h
 
         for viewer in self.viewers:
             # viewer.setSceneRect
@@ -344,11 +355,11 @@ class NebulaStudio(QMainWindow):
         [dw.setWindowTitle(value) for dw in self.image_prop_dock_widgets]
         print(f"Window title set to {value}")
 
-    def load_config(self, settings: dict):
+    def load_config(self, settings: dict[str, Any]):
         if "title" in settings:
             self.title = settings["title"]
 
-        stitching = settings.get("stitching")
+        stitching = cast(dict[str, Any], settings.get("stitching"))
         if stitching is not None:
             assert isinstance(stitching, dict), "'stitching' key must be a dictionary"
         self.stitching = stitching
@@ -358,7 +369,7 @@ class NebulaStudio(QMainWindow):
         ranges = images_dict.get("ranges", {})
         assert isinstance(ranges, dict), "'ranges' key must be a dictionary"
 
-        def to_range(range_key: str | None, ranges: dict):
+        def to_range(range_key: str | None, ranges: dict[str, Any]):
             if (
                 not isinstance(ranges, dict)
                 or range_key is None
@@ -455,11 +466,21 @@ class NebulaStudio(QMainWindow):
                         group.images.append(image)
 
                     replace = False
+
                 c += 1
             r += 1
 
+        for scenario in self.scenarios:
+            dw = self.new_image_setting_panel()
+            dw.on_image_selected(self.scenarios[scenario])
+        for dw in self.image_prop_dock_widgets[1:]:
+            self.tabifyDockWidget(self.image_prop_dock_widgets[0], dw)
+
         for dw in self.image_prop_dock_widgets:
             dw.update_image_selector()
+
+        # Sync selection ranges with potentially updated grid size
+        self.viewers_selection_dock_widget.sync_ranges()
 
     def load_settings(self, settings: dict):
         if "title" in settings and not self.windowTitle() == settings["title"]:
@@ -527,8 +548,7 @@ class NebulaStudio(QMainWindow):
             for c in c_range:
                 self.new_viewer(row=r, column=c)
         # Sync selection ranges and visibility
-        if hasattr(self, "viewers_selection_dock_widget"):
-            self.viewers_selection_dock_widget.sync_ranges()
+        self.viewers_selection_dock_widget.sync_ranges()
 
     def remove_viewer_line(self, delete_row: bool = True):
         # Remove a line of viewers from the layout
@@ -598,6 +618,7 @@ class NebulaStudio(QMainWindow):
         self.image_prop_dock_widgets.append(dw)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dw)
         dw.update_image_selector()
+        return dw
 
     def new_viewer(
         self, path: str | None = None, row: int = 0, column: int = 0
@@ -632,13 +653,39 @@ class NebulaStudio(QMainWindow):
         if col_min > col_max:
             col_min, col_max = col_max, col_min
 
+        # Update each viewer visibility
         for r in range(self.rows):
             for c in range(self.columns):
                 viewer = self.viewer_at(r, c, create=False)
-                if viewer is None:
-                    continue
-                visible = (row_min <= r <= row_max) and (col_min <= c <= col_max)
-                viewer.setVisible(visible)
+                if viewer is not None:
+                    visible = (row_min <= r <= row_max) and (col_min <= c <= col_max)
+                    viewer.setVisible(visible)
+
+        # Collapse hidden rows/columns so visible ones expand
+        for r in range(self.rows):
+            self.viewers_layout.setRowStretch(r, 1 if row_min <= r <= row_max else 0)
+            try:
+                # Not critical if not supported, keep safe
+                self.viewers_layout.setRowMinimumHeight(
+                    r, 0 if not (row_min <= r <= row_max) else 1
+                )
+            except Exception:
+                pass
+
+        for c in range(self.columns):
+            self.viewers_layout.setColumnStretch(c, 1 if col_min <= c <= col_max else 0)
+            try:
+                self.viewers_layout.setColumnMinimumWidth(
+                    c, 0 if not (col_min <= c <= col_max) else 1
+                )
+            except Exception:
+                pass
+
+        # Store the current visible range for stitching zoom logic
+        self.visible_row_min = row_min
+        self.visible_row_max = row_max
+        self.visible_col_min = col_min
+        self.visible_col_max = col_max
 
     def scroll_all_viewers_to(self, x: int, y: int):
         for viewer in self.viewers:

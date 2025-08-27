@@ -48,7 +48,12 @@ class ImagePropertiesPanel(QGroupBox):
         hbox = QHBoxLayout()
         hbox.addWidget(slider)
         hbox.addWidget(spinbox)
-        form.addRow("Opacity", hbox)
+
+        self.opacity_button = w = QPushButton("Opacity")
+        form.addRow(w, hbox)
+        w.setCheckable(True)
+        w.setChecked(True)
+        w.clicked.connect(self._on_opacity_button_clicked)
         slider.valueChanged.connect(self._on_opacity_changed)
         spinbox.valueChanged.connect(self._on_opacity_changed)
 
@@ -136,10 +141,11 @@ class ImagePropertiesPanel(QGroupBox):
         self.setEnabled(False)
 
         self.average_button = QPushButton("Remove Shading")
+        self.average_button.setCheckable(True)
         self.average_button.setToolTip(
             "Remove the median value of all pixels for all images of this group."
         )
-        self.average_button.clicked.connect(self.on_average_button_clicked)
+        self.average_button.toggled.connect(self.on_shading_button_clicked)
         self.form.addRow("Shading", self.average_button)
 
         self.uniform_button = QPushButton("Uniform")
@@ -154,6 +160,8 @@ class ImagePropertiesPanel(QGroupBox):
         self.export_button.setToolTip("Export the image to a file")
         self.export_button.clicked.connect(self.on_export_button_clicked)
         self.form.addRow("Export", self.export_button)
+
+        self._image: NebulaImage | None = None
 
     def on_export_button_clicked(self):
         """
@@ -171,21 +179,24 @@ class ImagePropertiesPanel(QGroupBox):
             return
         image.apply_minmax(checked)
 
-    def on_average_button_clicked(self):
+    def on_shading_button_clicked(self, checked: bool):
         """
-        Handles the average button click event.
-        This method should implement the logic to average all images in the Nebula Studio.
+        Handles the shading button click event.
+        This method should implement the logic to remove the median value of all pixels for all images of this group.
         """
-        # Get all images of the group
+        # This only works for groups of images
         if not isinstance(image := self.image, NebulaImageGroup):
             return
-        image.apply_average()
 
-        self.average = QLabel()
+        image.apply_average(checked)
 
-        assert image.average_image is not None, "Average image should not be None"
-        self.average.setPixmap(make_rgb_pixmap(image.average_image))
-        self.average.show()
+        # Show the result in a new window
+        if image.average_image is not None:
+            average_image = make_rgb_pixmap(image.average_image)
+            self.average_window = QLabel()
+            self.average_window.setPixmap(average_image)
+            self.average_window.show()
+            self.average_window.setWindowTitle(f"Average of {image.name}")
 
     @property
     def image(self) -> NebulaImage | None:
@@ -205,9 +216,10 @@ class ImagePropertiesPanel(QGroupBox):
             return
         self._image = value
 
-        self.setTitle(self._image.name)
-        if self._image.diff_image is not None:
-            self.setWindowTitle(self._image.name)
+        name = self._image.name
+        if isinstance(self._image, NebulaImageGroup):
+            name = f"{name} (Group of {len(self._image.images)} images)"
+        self.setTitle(name)
 
         self.image_url.setText(self._image.name)
         self.image_url.setToolTip(self._image.pattern)
@@ -232,6 +244,12 @@ class ImagePropertiesPanel(QGroupBox):
         if (img := self.image) is None:
             return []
         return [img] + (list(img.images) if isinstance(img, NebulaImageGroup) else [])
+
+    def _on_opacity_button_clicked(self, checked: bool):
+        """
+        Handles the opacity button click event.
+        """
+        self._on_opacity_changed(100 if checked else 0)
 
     def _on_opacity_changed(self, value: int | float):
         """
@@ -317,6 +335,7 @@ class ImagePropertiesPanel(QGroupBox):
             self.setEnabled(False)
             self.setTitle("No Image")
             return
+
         self.setEnabled(True)
         opacity = self.image.opacity()
         white_level = self.image.balances[1]
@@ -330,7 +349,9 @@ class ImagePropertiesPanel(QGroupBox):
         self.opacity_spinner.blockSignals(True)
         self.offset_x_spinner.blockSignals(True)
         self.offset_y_spinner.blockSignals(True)
+        self.opacity_button.blockSignals(True)
 
+        self.opacity_button.setChecked(opacity > 0)
         self.black_level_spinner.setValue(black_level * 100)
         self.black_level_slider.setValue(int(black_level * 100))
         self.white_level_spinner.setValue(white_level * 100)
@@ -339,6 +360,7 @@ class ImagePropertiesPanel(QGroupBox):
         self.opacity_slider.setValue(int(opacity * 100))
         self.offset_x_spinner.setValue(self.image.pos().x())
         self.offset_y_spinner.setValue(self.image.pos().y())
+
         self.recenter_pos_sliders()
 
         self.opacity_slider.blockSignals(False)
@@ -349,6 +371,7 @@ class ImagePropertiesPanel(QGroupBox):
         self.black_level_spinner.blockSignals(False)
         self.offset_x_spinner.blockSignals(False)
         self.offset_y_spinner.blockSignals(False)
+        self.opacity_button.blockSignals(False)
 
         self.average_button.setEnabled(isinstance(self.image, NebulaImageGroup))
 
@@ -379,12 +402,12 @@ class ImagesPropertiesDockWidget(QDockWidget):
 
     def __init__(self, nebula_studio: "NebulaStudio"):
         """
-        Initializes the NebulaStudiotoolbox instance.
+        Initializes the DockWidget instance.
         """
         super().__init__()
         self.nebula_studio = nebula_studio
         self.image_panel = ImagePropertiesPanel()
-        self.setWindowTitle(nebula_studio.windowTitle())
+
         # Dropdown list to select the image
         self.image_selector = QPushButton("Selection")
         self.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
@@ -394,13 +417,16 @@ class ImagesPropertiesDockWidget(QDockWidget):
         vbox.addWidget(self.image_panel)
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
         )
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
+        self.dockLocationChanged.connect(self.dock_widget_area_changed)
 
     def update_image_selector(self):
         """
@@ -463,4 +489,17 @@ class ImagesPropertiesDockWidget(QDockWidget):
         Handles the image selection event.
         """
         self.image_panel.image = image
-        self.setWindowTitle(self.nebula_studio.windowTitle() + " - " + image.name)
+        self.dock_widget_area_changed()
+
+    def dock_widget_area_changed(self):
+        """
+        Handles the dock widget area change event.
+        """
+        if image := self.image_panel.image:
+            name = image.name
+            # Check if docked
+            if self.isFloating():
+                name += " - " + self.nebula_studio.windowTitle()
+        else:
+            name = self.nebula_studio.windowTitle()
+        self.setWindowTitle(name)

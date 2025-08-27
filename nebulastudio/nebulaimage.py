@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsSceneContextMenuEvent,
     QMenu,
+    QFileDialog,
 )
 from PyQt6.QtCore import Qt, QPointF
 from PIL import Image
@@ -457,40 +458,38 @@ class NebulaImageGroup(NebulaImage):
             image.update_pixmap()
             image.update_tooltip()
 
-    def apply_average(self):
+    def apply_average(self, do_average: bool):
         """
         Applies the average image to all images in the group.
+        If do_average is False, the average image is removed.
         """
-        if self.average_image is not None:
-            self.average_image = None
-            return
+        try:
+            if not do_average:
+                self.average_image = None
+                return
 
-        self.average_image = numpy.median(
-            numpy.array([image.image for image in self.images]), axis=0
-        ).astype(numpy.uint64)
+            self.average_image = numpy.median(
+                numpy.array([image.image for image in self.images]), axis=0
+            ).astype(numpy.uint64)
 
-        if self.average_image is None:
-            print("No average image available.")
-            return
+            # Calculate mean pixel value in the shade image (we want to center the
+            # data arround zero to make a correction image)
+            mean_pixel = numpy.mean(self.average_image, axis=(0, 1))
+            self.average_image = self.average_image - mean_pixel
 
-        _min, _max = (
-            min(image.image.min() for image in self.images if image.image is not None),
-            max(image.image.max() for image in self.images if image.image is not None),
-        )
-        # Update the average image for each image in the group
+            if self.average_image is None:
+                print("No average image available.")
 
-        for image in self.images:
-            image.minmax = (_min, _max)
-            image.average_image = self.average_image
-            image.update_pixmap()
+        finally:
+            for image in self.images:
+                # image.minmax = (_min, _max)
+                image.average_image = self.average_image
+                image.update_pixmap()
 
     def export_images(self, path: str):
         """
         Stitch all the images of the group into a single image.
         """
-
-        if not os.path.exists(path):
-            os.makedirs(path)
 
         viewer = self.images[0].viewer
         displacement = viewer.nebula_studio.displacement_size_pixels
@@ -541,5 +540,18 @@ class NebulaImageGroup(NebulaImage):
                 x_global : x_global + (x_end - x_start),
             ] = cropped
 
+        # Ask the user where to store the big image
+        path = QFileDialog.getSaveFileName(
+            None,
+            "Save big image",
+            os.path.join(path, f"{self.name}.png"),
+            "PNG files (*.png)",
+        )
+        if not path:
+            return
+
+        if not os.path.exists(os.path.dirname(path)):
+            os.makedirs(os.path.dirname(path))
+
         # Save the big image
-        Image.fromarray(big_image).save(os.path.join(path, f"{self.name}.png"))
+        Image.fromarray(big_image).save(path)
