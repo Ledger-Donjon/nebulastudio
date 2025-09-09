@@ -4,11 +4,13 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsLineItem,
     QFrame,
+    QMenu,
 )
 from .nebulaimage import NebulaImage, NebulaImageGroup
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QLineF
 from typing import TYPE_CHECKING
+import logging
 import os
 
 if TYPE_CHECKING:
@@ -92,9 +94,13 @@ class Viewer(QGraphicsView):
         """
         if 0 <= index < len(self.group.images):
             self.group.images[index].setOpacity(opacity)
-            print(f"Set opacity of image {index} to {opacity}")
+            logging.getLogger(__name__).info(
+                "Set opacity of image %d to %s", index, opacity
+            )
         else:
-            print(f"Index {index} out of bounds for images list")
+            logging.getLogger(__name__).warning(
+                "Index %d out of bounds for images list", index
+            )
 
     def open_image(
         self,
@@ -112,8 +118,10 @@ class Viewer(QGraphicsView):
                 reference_pattern=reference_pattern,
             )
 
-        except Exception as e:
-            print("Failed to create image from file:", filename, e)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Failed to create image from file: %s", filename
+            )
             return
 
         if replace:
@@ -124,7 +132,9 @@ class Viewer(QGraphicsView):
 
         self.group.images.append(image)
         self._scene.addItem(image)
-        print("Image item added to scene:", filename, len(self.group.images))
+        logging.getLogger(__name__).info(
+            "Image item added to scene: %s %d", filename, len(self.group.images)
+        )
         return image
 
     def set_reticula_pos(self, x: float, y: float):
@@ -281,7 +291,7 @@ class Viewer(QGraphicsView):
                 (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".npy")
             ), f"File {path} is not a valid image"
         except (AssertionError, FileNotFoundError) as e:
-            print(str(e))
+            logging.getLogger(__name__).warning("%s", e)
             event.ignore()
             return
 
@@ -356,3 +366,18 @@ class Viewer(QGraphicsView):
             and value["position"] == [self.row, self.column]
         ):
             self.group.settings = value
+
+    def context_menu(self):
+        """
+        Returns a QMenu for the viewer, including actions for all images in the group.
+        """
+        menu = QMenu()
+        menu.addSection(f"Images in ({self.row}, {self.column})")
+        # Add actions for each image in the group
+        for image in self.group.images:
+            logging.getLogger(__name__).info("Image name: %s", image.name)
+            img_menu = image.context_menu(menu)
+            img_menu.setTitle(image.name)
+            menu.addMenu(img_menu)
+        # Add more viewer-specific actions here if needed
+        return menu

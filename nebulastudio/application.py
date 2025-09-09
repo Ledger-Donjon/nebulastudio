@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QApplication, QFileDialog
 import os
 import yaml
+import logging
 from nebulastudio.nebulastudio import NebulaStudio
 
 
@@ -16,20 +17,22 @@ class NebulaStudioApplication(QApplication):
 
         self.settings_path = None
 
+        logger = logging.getLogger(__name__)
+
         try:
             self.load_file("nebulaconfig.yaml")
         except FileNotFoundError:
-            print("Configuration file not found, loading default settings.")
+            logger.warning("Configuration file not found, loading default settings.")
             raise
         except ValueError as e:
-            print(f"Error loading configuration file: {e}")
+            logger.error("Error loading configuration file: %s", e)
 
         try:
             self.load_file("nebulasettings.yaml")
         except FileNotFoundError:
-            print("Settings file not found, loading default settings.")
+            logger.warning("Settings file not found, loading default settings.")
         except ValueError as e:
-            print(f"Error loading settings file: {e}")
+            logger.error("Error loading settings file: %s", e)
 
     def new_window(self):
         # Create a new instance of NebulaStudio and show it

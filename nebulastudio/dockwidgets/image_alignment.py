@@ -1,16 +1,19 @@
 from typing import TYPE_CHECKING
+import logging
 import numpy
 from PyQt6.QtWidgets import (
     QDockWidget,
     QLabel,
+    QMainWindow,
     QVBoxLayout,
     QGridLayout,
     QWidget,
     QGraphicsView,
     QGraphicsScene,
     QGraphicsPixmapItem,
+    QHBoxLayout,
 )
-from PyQt6.QtCore import Qt, QPointF, QRect, QEvent
+from PyQt6.QtCore import Qt, QPointF, QRect, QEvent, QPoint
 from PyQt6.QtGui import (
     QColor,
     QKeyEvent,
@@ -27,7 +30,6 @@ if TYPE_CHECKING:
 from ..nebulaimage import NebulaImage
 from ..diff import make_rgb_pixmap
 
-# from ..alignment import NebulaAlignmentView
 from ..utils.colors import LedgerColors
 
 
@@ -36,15 +38,14 @@ class NebulaAlignmentView(QGraphicsView):
     A label for displaying alignment information in Nebula Studio.
     """
 
-    def __init__(self, toolbox: "ImageAlignmentDockWidget"):
+    def __init__(self, window: "ImageAlignmentWindow"):
         """
         Initializes the NebulaAlignmentView instance.
         """
-        super().__init__(toolbox)
-        self.toolbox = toolbox
+        super().__init__(window)
+        self._window = window
 
         self.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
-        self.setStyleSheet("background-color: lightgray;")
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -91,7 +92,7 @@ class NebulaAlignmentView(QGraphicsView):
         """
         Returns the size of the alignment kernel.
         """
-        return self.toolbox.kernel_size
+        return self._window.kernel_size
 
     def update_alignment_kernel(self, position: QPointF | None = None):
         """
@@ -113,7 +114,6 @@ class NebulaAlignmentView(QGraphicsView):
         if event is None:
             return super().enterEvent(event)
 
-        self.setStyleSheet("background-color: lightblue;")
         position = int(event.position().x()), int(event.position().y())
         position = self.mapToScene(*position)
         self.update_alignment_kernel(position)
@@ -140,7 +140,7 @@ class NebulaAlignmentView(QGraphicsView):
         self.update_alignment_kernel(position)
         self.setCursor(Qt.CursorShape.BlankCursor)
         self.alignment_kernel.setVisible(True)
-        self.toolbox.find_best_alignment(self.alignment_kernel.rect().toRect())
+        self._window.find_best_alignment(self.alignment_kernel.rect().toRect())
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, a0: QEvent | None) -> None:
@@ -173,22 +173,22 @@ class NebulaAlignmentView(QGraphicsView):
     def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
         if not self.alignment_kernel:
             return super().mouseDoubleClickEvent(event)
-        self.toolbox.find_best_alignment(
+        correction_offset = self._window.find_best_alignment(
             kernel_rect=self.alignment_kernel.rect().toRect()
         )
+        if correction_offset is not None:
+            self._window.image.setPos(self._window.image.pos() - correction_offset)
+            self._window.image.align()
 
 
-class ImageAlignmentDockWidget(QDockWidget):
+class ImageAlignmentResultDockWidget(QDockWidget):
     """
-    A toolbox for aligning images in Nebula Studio.
+    A dock widget for displaying the result of image alignment.
     """
 
-    def __init__(self, nebula_studio: "NebulaStudio"):
-        """
-        Initializes the ImageAlignmentToolbox instance.
-        """
-        super().__init__("Image Alignment Toolbox")
-        self.nebula_studio = nebula_studio
+    def __init__(self):
+        super().__init__("Image Alignment Result")
+        self.res = QWidget()
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
@@ -202,6 +202,64 @@ class ImageAlignmentDockWidget(QDockWidget):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
+        self.result_images = [
+            QLabel("Left Image"),
+            QLabel("Right Image"),
+            QLabel("Result Image"),
+            QLabel("Alignment Score"),
+        ]
+        res_layout = QVBoxLayout(self.res)
+        # Align content horizontally
+        res_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        res_layout.setContentsMargins(0, 0, 0, 0)
+        for i in range(4):
+            hbox = QHBoxLayout()
+            hbox.addStretch()
+            hbox.addWidget(self.result_images[i])
+            hbox.addStretch()
+            res_layout.addLayout(hbox)
+        self.setWidget(self.res)
+
+    def show_result(
+        self,
+        pm_1: QPixmap,
+        pm_2: QPixmap,
+        pm_3: QPixmap,
+        best_score: float,
+        best_x: int,
+        best_y: int,
+        correction_offset: QPoint,
+    ):
+        """
+        Shows the result of the image alignment.
+        """
+        self.result_images[0].setPixmap(pm_1)
+        self.result_images[1].setPixmap(pm_2)
+        self.result_images[2].setPixmap(pm_3)
+        self.result_images[3].setText(
+            f"Best score\nat {best_x}, {best_y}\nCorrection offset: {correction_offset.x()}, {correction_offset.y()}"
+        )
+        self.setToolTip(f"Best score: {best_score}")
+
+
+class ImageAlignmentWindow(QMainWindow):
+    """
+    A window for aligning images.
+    """
+
+    def __init__(self, nebula_studio: "NebulaStudio"):
+        """
+        Initializes the ImageAlignmentWindow instance.
+        """
+        super().__init__(nebula_studio)
+        self.nebula_studio = nebula_studio
+        self.result_dock_widget = ImageAlignmentResultDockWidget()
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.result_dock_widget
+        )
+        self.setWindowTitle("Image Alignment")
+        self.setGeometry(100, 100, 800, 600)
+
         self.l, self.r = NebulaAlignmentView(self), NebulaAlignmentView(self)
         self.d, self.s = NebulaAlignmentView(self), NebulaAlignmentView(self)
 
@@ -229,7 +287,7 @@ class ImageAlignmentDockWidget(QDockWidget):
         grid.addWidget(self.message, 2, 0, 1, 2)
         grid.setRowStretch(2, 1)
 
-        self.setWidget(w := QWidget())
+        self.setCentralWidget(w := QWidget())
         w.setLayout(vbox)
 
         self.image: NebulaImage | None = None
@@ -290,7 +348,7 @@ class ImageAlignmentDockWidget(QDockWidget):
                 best_pos = init_pos = image.pos()
                 res = image.align()
                 if res is None:
-                    print("Alignment failed")
+                    logging.getLogger(__name__).warning("Alignment failed")
                     return super().keyPressEvent(a0)
 
                 for x in range(-self.kernel_size * diff, (self.kernel_size + 1) * diff):
@@ -321,7 +379,7 @@ class ImageAlignmentDockWidget(QDockWidget):
 
         return super().keyPressEvent(a0)
 
-    def closeEvent(self, event: QCloseEvent | None) -> None:
+    def closeEvent(self, a0: QCloseEvent | None) -> None:
         if self.image is not None:
             # Reset the image to None when closing the toolbox
             self.image.last_alignment_direction = None
@@ -332,7 +390,7 @@ class ImageAlignmentDockWidget(QDockWidget):
         # Reset the history
         self.history = []
         self.hide()
-        return super().closeEvent(event)
+        return super().closeEvent(a0)
 
     def set_images(
         self, image_left: NebulaImage, image_right: NebulaImage, offset: QPointF
@@ -372,7 +430,9 @@ class ImageAlignmentDockWidget(QDockWidget):
         cropping_height = height - abs(y := int(cropping_origin.y()))
 
         if cropping_width <= 0 or cropping_height <= 0:
-            print("Cropping rectangle has zero width or height, cannot crop.")
+            logging.getLogger(__name__).warning(
+                "Cropping rectangle has zero width or height, cannot crop."
+            )
             return
 
         cropped_array = numpy_image_l[
@@ -427,11 +487,22 @@ class ImageAlignmentDockWidget(QDockWidget):
         # Handle the wheel event to augment or reduce the kernel size
         if a0 is None:
             return super().wheelEvent(a0)
+
+        # Check if shift is pressed
+        if Qt.KeyboardModifier.ShiftModifier not in a0.modifiers():
+            # If shift is not pressed, ignore the wheel event
+            a0.ignore()
+            return
+
         if a0.angleDelta().y() > 0:
-            self.kernel_size += 1
+            self.kernel_size += 2
         else:
-            if self.kernel_size > 1:
-                self.kernel_size -= 1
+            if self.kernel_size > 2:
+                self.kernel_size -= 2
+
+        # Make kernel size odd
+        if self.kernel_size % 2 == 0:
+            self.kernel_size += 1
 
         for view in (self.l, self.r, self.d, self.s):
             view.update_alignment_kernel()
@@ -448,7 +519,7 @@ class ImageAlignmentDockWidget(QDockWidget):
             or self.image.image is None
             or self.image_other.image is None
         ):
-            print("No images set for alignment.")
+            logging.getLogger(__name__).warning("No images set for alignment.")
             return
 
         # Use the currently displayed cropped arrays to keep coordinates consistent
@@ -463,7 +534,9 @@ class ImageAlignmentDockWidget(QDockWidget):
             else self.image_other.image_to_show
         )
         if left is None or right is None:
-            print("No image data available for alignment preview.")
+            logging.getLogger(__name__).warning(
+                "No image data available for alignment preview."
+            )
             return
 
         # For the left image we extract the size of the kernel rectangle
@@ -472,51 +545,44 @@ class ImageAlignmentDockWidget(QDockWidget):
         y0 = max(0, kernel_rect.top())
         x1 = min(w, kernel_rect.left() + kernel_rect.width())
         y1 = min(h, kernel_rect.top() + kernel_rect.height())
+
+        # The image we will search for the best alignment
         sub_image = left[y0:y1, x0:x1].copy()
 
         # For the right image we extract the double size of the kernel rectangle
         h, w = right.shape[:2]
-        x0 = max(0, kernel_rect.left() - kernel_rect.width() // 2)
-        y0 = max(0, kernel_rect.top() - kernel_rect.height() // 2)
-        x1 = min(
-            w,
-            kernel_rect.left() + kernel_rect.width() + kernel_rect.width() // 2,
-        )
-        y1 = min(
-            h, kernel_rect.top() + kernel_rect.height() + kernel_rect.height() // 2
-        )
+        big_kernel_left = kernel_rect.left() - kernel_rect.width() // 2
+        big_kernel_top = kernel_rect.top() - kernel_rect.height() // 2
+        x0 = max(0, big_kernel_left)
+        y0 = max(0, big_kernel_top)
+        x1 = min(w, big_kernel_left + 2 * kernel_rect.width())
+        y1 = min(h, big_kernel_top + 2 * kernel_rect.height())
+
+        # The image where we will search for the best alignment
         sub_image_other = right[y0:y1, x0:x1].copy()
 
-        print(
-            f"Sub-image size: {sub_image.shape}, Sub-image other size: {sub_image_other.shape}"
+        logging.getLogger(__name__).info(
+            "Sub-image size: %s, Sub-image other size: %s",
+            sub_image.shape,
+            sub_image_other.shape,
         )
         if sub_image.shape[0] <= 3 or sub_image.shape[1] <= 3:
-            print("Left image is too small to find the best alignment.")
+            logging.getLogger(__name__).warning(
+                "Left image is too small to find the best alignment."
+            )
             return
         if sub_image_other.shape[0] <= 3 or sub_image_other.shape[1] <= 3:
-            print("Right image is too small to find the best alignment.")
+            logging.getLogger(__name__).warning(
+                "Right image is too small to find the best alignment."
+            )
             return
-
-        label1 = QLabel("Left Image")
-        label1.setPixmap(make_rgb_pixmap(sub_image, balances=self.image.balances))
-        label2 = QLabel("Right Image")
-        label2.setPixmap(
-            make_rgb_pixmap(sub_image_other, balances=self.image_other.balances)
-        )
-        # self.res = QDockWidget("Result Image")
-        self.res = QWidget()
-        res_layout = QVBoxLayout(self.res)
-        # Align content horizontally
-        res_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        res_layout.addWidget(label1)
-        res_layout.addWidget(label2)
 
         # We try to find the left image (sub_image) in the right image (sub_image_other)
         DX = sub_image_other.shape[0] - sub_image.shape[0]
         DY = sub_image_other.shape[1] - sub_image.shape[1]
-        print(f"DX: {DX}, DY: {DY}")
+        logging.getLogger(__name__).info("DX: %d, DY: %d", DX, DY)
         if DX <= 0 or DY <= 0:
-            print("No space to find the best alignment.")
+            logging.getLogger(__name__).warning("No space to find the best alignment.")
             return
 
         best_x = 0
@@ -532,8 +598,6 @@ class ImageAlignmentDockWidget(QDockWidget):
                     best_score = score
                     best_x = x
                     best_y = y
-        print(f"Best x: {best_x}, Best y: {best_y}")
-        print(f"Best score: {best_score}")
 
         # Replace in the second (green) channel of sub_image_other the data of sub_image
         sub_image_other_diff = sub_image_other.copy()
@@ -563,9 +627,23 @@ class ImageAlignmentDockWidget(QDockWidget):
             best_y : best_y + sub_image.shape[1],
         ] = rgb
 
-        label3 = QLabel("Result Image")
-        label3.setPixmap(
-            make_rgb_pixmap(sub_image_other_diff, balances=self.image_other.balances)
+        pm_1 = make_rgb_pixmap(sub_image, balances=self.image.balances)
+        pm_2 = make_rgb_pixmap(sub_image_other, balances=self.image_other.balances)
+        pm_3 = make_rgb_pixmap(sub_image_other_diff, balances=self.image_other.balances)
+
+        # In term of correction, we need to apply the following offset to the left image
+        self.correction_offset = QPoint(
+            best_x - (kernel_rect.left() - big_kernel_left),
+            best_y - (kernel_rect.top() - big_kernel_top),
         )
-        res_layout.addWidget(label3)
-        self.res.show()
+
+        self.result_dock_widget.show_result(
+            pm_1, pm_2, pm_3, best_score, best_x, best_y, self.correction_offset
+        )
+
+        logging.getLogger(__name__).info(
+            "Correction offset: %s", self.correction_offset
+        )
+        return self.correction_offset
+        # self.image.setPos(self.image.pos() - correction_offset)
+        # self.image.align()

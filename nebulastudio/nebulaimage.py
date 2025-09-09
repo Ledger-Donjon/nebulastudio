@@ -12,8 +12,15 @@ from PIL import Image
 import os
 import numpy
 
-from .diff import make_rgb_pixmap, construct_diff_ndarray
+
+from .diff import (
+    make_rgb_pixmap,
+    construct_diff_ndarray,
+    normalize_to_8bits,
+    apply_balances,
+)
 from typing import TYPE_CHECKING, cast
+import logging
 
 if TYPE_CHECKING:
     from .nebulastudio import NebulaStudio
@@ -167,7 +174,7 @@ class NebulaImage(QGraphicsPixmapItem):
         self.update_pixmap()
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent | None) -> None:
-        print(f"Double clicked on image: {self.name}")
+        logging.getLogger(__name__).info("Double clicked on image: %s", self.name)
         self.select_in_panel()
         if event is not None:
             event.accept()
@@ -178,37 +185,67 @@ class NebulaImage(QGraphicsPixmapItem):
         Selects the image in the image panel of the Nebula Studio.
         """
         if (ns := self.nebula_studio) is not None:
-            ns.image_prop_dock_widgets[0].image_panel.image = self
+            ns.image_prop_dock_widget.image_panel.image = self
         else:
-            print("Nebula Studio instance is not available.")
+            logging.getLogger(__name__).warning(
+                "Nebula Studio instance is not available."
+            )
 
     # Context menu settings for the image
     def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent | None) -> None:
         """Handles the context menu event for the image."""
         if event is not None:
-            menu = QMenu()
-            menu.addSection(f"{self.name} Alignment")
-            menu.addAction("Align left", lambda: self.align(Qt.AlignmentFlag.AlignLeft))
-            menu.addAction(
-                "Align right", lambda: self.align(Qt.AlignmentFlag.AlignRight)
-            )
-            menu.addAction("Align top", lambda: self.align(Qt.AlignmentFlag.AlignTop))
-            menu.addAction(
-                "Align bottom", lambda: self.align(Qt.AlignmentFlag.AlignBottom)
-            )
-            menu.addAction(
-                "Set same offset for all images",
-                lambda: self.align(Qt.AlignmentFlag.AlignCenter),
-            )
-            menu.exec(event.screenPos())
+            if (v := self.viewer) is not None:
+                menu = v.context_menu()
+            else:
+                menu = self.context_menu()
+            if menu is not None:
+                menu.exec(event.screenPos())
             event.accept()
+
+    def context_menu(self, top_menu: QMenu | None = None) -> QMenu:
+        menu = QMenu(top_menu)
+        menu.addSection("Selection")
+        menu.addAction("Select image", lambda: self.select_in_panel())
+        menu.addSection("Alignment")
+        ## Get left image
+        left_image = self.same_scenario_image(Qt.AlignmentFlag.AlignLeft)
+        if left_image is not None:
+            menu.addAction(
+                f"Align left with {left_image.name}",
+                lambda: self.align(Qt.AlignmentFlag.AlignLeft),
+            )
+        right_image = self.same_scenario_image(Qt.AlignmentFlag.AlignRight)
+        if right_image is not None:
+            menu.addAction(
+                f"Align right with {right_image.name}",
+                lambda: self.align(Qt.AlignmentFlag.AlignRight),
+            )
+        top_image = self.same_scenario_image(Qt.AlignmentFlag.AlignTop)
+        if top_image is not None:
+            menu.addAction(
+                f"Align top with {top_image.name}",
+                lambda: self.align(Qt.AlignmentFlag.AlignTop),
+            )
+        bottom_image = self.same_scenario_image(Qt.AlignmentFlag.AlignBottom)
+        if bottom_image is not None:
+            menu.addAction(
+                f"Align bottom with {bottom_image.name}",
+                lambda: self.align(Qt.AlignmentFlag.AlignBottom),
+            )
+
+        menu.addAction(
+            "Set same offset for all images",
+            lambda: self.align(Qt.AlignmentFlag.AlignCenter),
+        )
+        return menu
 
     def same_scenario_image(self, direction: Qt.AlignmentFlag):
         """
         Finds the image in the same scenario as this one, in the specified direction.
         """
         if (v := self.viewer) is None or (ns := self.nebula_studio) is None:
-            print("No viewer found for alignment.")
+            logging.getLogger(__name__).warning("No viewer found for alignment.")
             return
 
         if direction == Qt.AlignmentFlag.AlignLeft:
@@ -220,12 +257,16 @@ class NebulaImage(QGraphicsPixmapItem):
         elif direction == Qt.AlignmentFlag.AlignBottom:
             v2 = ns.viewer_at(v.row + 1, v.column, create=False)
         else:
-            print(f"Unknown alignment direction: {direction}")
+            logging.getLogger(__name__).warning(
+                "Unknown alignment direction: %s", direction
+            )
             return
 
         # Get image of the same group in the other viewer
         if v2 is None:
-            print(f"No viewer found in direction {direction}.")
+            logging.getLogger(__name__).warning(
+                "No viewer found in direction %s.", direction
+            )
             return
 
         image = None
@@ -247,7 +288,7 @@ class NebulaImage(QGraphicsPixmapItem):
         if direction is None:
             direction = self.last_alignment_direction
         if direction is None:
-            print("No alignment direction specified.")
+            logging.getLogger(__name__).warning("No alignment direction specified.")
             return
 
         if direction == Qt.AlignmentFlag.AlignCenter:
@@ -266,7 +307,9 @@ class NebulaImage(QGraphicsPixmapItem):
 
         image_right = self.same_scenario_image(direction)
         if image_right is None:
-            print(f"No image found in the same scenario in direction {direction.name}.")
+            logging.getLogger(__name__).warning(
+                "No image found in the same scenario in direction %s.", direction.name
+            )
             return
 
         if direction == Qt.AlignmentFlag.AlignRight:
@@ -280,8 +323,9 @@ class NebulaImage(QGraphicsPixmapItem):
         else:
             cropping_origin = QPointF()
 
-        ns.alignment_toolbox.set_images(self, image_right, cropping_origin)
-        return ns.alignment_toolbox.alignment_score
+        ns.alignment_window.set_images(self, image_right, cropping_origin)
+        ns.alignment_window.show()
+        return ns.alignment_window.alignment_score
 
     @property
     def next_viewer_image(self) -> "NebulaImage | None":
@@ -319,7 +363,9 @@ class NebulaImage(QGraphicsPixmapItem):
         Args:
             value (dict): The new settings for the image.
         """
-        print(f"Setting image settings: {value} to {self.name}")
+        logging.getLogger(__name__).info(
+            "Setting image settings: %s to %s", value, self.name
+        )
         if "opacity" in value:
             self.setOpacity(value["opacity"])
         if "offset" in value:
@@ -450,7 +496,9 @@ class NebulaImageGroup(NebulaImage):
             )
         else:
             minmax = None
-        print(f"Applying minmax {minmax} to {len(self.images)} images")
+        logging.getLogger(__name__).info(
+            "Applying minmax %s to %d images", minmax, len(self.images)
+        )
         for image in self.images:
             if image.image is None:
                 continue
@@ -478,7 +526,7 @@ class NebulaImageGroup(NebulaImage):
             self.average_image = self.average_image - mean_pixel
 
             if self.average_image is None:
-                print("No average image available.")
+                logging.getLogger(__name__).warning("No average image available.")
 
         finally:
             for image in self.images:
@@ -486,13 +534,15 @@ class NebulaImageGroup(NebulaImage):
                 image.average_image = self.average_image
                 image.update_pixmap()
 
-    def export_images(self, path: str):
+    def export_images(self, path: str | None = None):
         """
         Stitch all the images of the group into a single image.
         """
 
         viewer = self.images[0].viewer
+        assert viewer is not None
         displacement = viewer.nebula_studio.displacement_size_pixels
+        assert displacement is not None
         # Create a big image.
         big_image = numpy.zeros(
             (
@@ -503,50 +553,77 @@ class NebulaImageGroup(NebulaImage):
             dtype=numpy.uint8,
         )
 
+        xmin = big_image.shape[1]
+        xmax = 0
+        ymin = big_image.shape[0]
+        ymax = 0
+
         for image in self.images:
             if (im := image.image_to_show) is None:
+                continue
+            if (v := image.viewer) is None:
                 continue
 
             x = int(-image.pos().x() + im.shape[1] / 2 - displacement[0] / 2)
             y = int(-image.pos().y() + im.shape[0] / 2 - displacement[1] / 2)
 
-            y_start = 0 if image.viewer.row == 0 else y
-            x_start = 0 if image.viewer.column == 0 else x
+            y_start = 0 if v.row == 0 else y
+            x_start = 0 if v.column == 0 else x
 
             y_end = (
                 (y + displacement[1])
-                if image.viewer.row < viewer.nebula_studio.rows - 1
+                if v.row < viewer.nebula_studio.rows - 1
                 else im.shape[0]
             )
             x_end = (
                 (x + displacement[0])
-                if image.viewer.column < viewer.nebula_studio.columns - 1
+                if v.column < viewer.nebula_studio.columns - 1
                 else im.shape[1]
             )
 
-            cropped = im[y_start:y_end, x_start:x_end]
-            print(cropped.shape)
+            # Make a copy of the image to avoid modifying the original
+            im2 = im.astype(numpy.uint64)
+            # Convert the numpy array to a PIL image
+            im2 = normalize_to_8bits(
+                im2,
+                min=image.minmax[0] if image.minmax else None,
+                max=image.minmax[1] if image.minmax else None,
+            )
+            im2 = apply_balances(im2, image.balances)
 
-            y_global = displacement[1] * (image.viewer.row + 1)
-            x_global = displacement[0] * (image.viewer.column + 1)
+            cropped = im2[y_start:y_end, x_start:x_end]
 
-            if image.viewer.row == 0:
+            y_global = displacement[1] * (v.row + 1)
+            x_global = displacement[0] * (v.column + 1)
+
+            if v.row == 0:
                 y_global -= y
-            if image.viewer.column == 0:
+            if v.column == 0:
                 x_global -= x
+
+            x_global_top = x_global + (x_end - x_start)
+            y_global_top = y_global + (y_end - y_start)
 
             big_image[
                 y_global : y_global + (y_end - y_start),
                 x_global : x_global + (x_end - x_start),
             ] = cropped
 
+            xmin = min(xmin, x_global)
+            xmax = max(xmax, x_global_top)
+            ymin = min(ymin, y_global)
+            ymax = max(ymax, y_global_top)
+
+        big_image = big_image[ymin:ymax, xmin:xmax]
+
         # Ask the user where to store the big image
-        path = QFileDialog.getSaveFileName(
+        path, _ = QFileDialog.getSaveFileName(
             None,
             "Save big image",
-            os.path.join(path, f"{self.name}.png"),
+            f"{self.name}.png",
             "PNG files (*.png)",
         )
+        logging.getLogger(__name__).info("Saving big image to %s", path)
         if not path:
             return
 

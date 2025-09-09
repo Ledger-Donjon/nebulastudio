@@ -159,7 +159,7 @@ class ImagePropertiesPanel(QGroupBox):
         self.export_button = QPushButton("Export")
         self.export_button.setToolTip("Export the image to a file")
         self.export_button.clicked.connect(self.on_export_button_clicked)
-        self.form.addRow("Export", self.export_button)
+        self.form.addRow("Export stitch image", self.export_button)
 
         self._image: NebulaImage | None = None
 
@@ -169,7 +169,7 @@ class ImagePropertiesPanel(QGroupBox):
         """
         if not isinstance(image := self.image, NebulaImageGroup):
             return
-        image.export_images(os.path.join(os.path.expanduser("~"), "Desktop", "export"))
+        image.export_images()
 
     def on_uniform_button_clicked(self, checked: bool):
         """

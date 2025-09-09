@@ -23,10 +23,11 @@ from PyQt6.QtGui import QKeySequence, QGuiApplication
 from .nebulaimage import NebulaImageGroup
 from .dockwidgets.images_properties import ImagesPropertiesDockWidget
 from .dockwidgets.viewers_selection import ViewersSelectionDockWidget
-from .dockwidgets.image_alignment import ImageAlignmentDockWidget
+from .dockwidgets.image_alignment import ImageAlignmentWindow
 
 import os
 import yaml
+import logging
 from typing import TYPE_CHECKING, cast, Any
 
 if TYPE_CHECKING:
@@ -192,10 +193,14 @@ class NebulaStudio(QMainWindow):
         self.stitching: dict[str, Any] | None = None
 
         # Create a group of dockwidgets to adjust images properties
-        self.image_prop_dock_widgets = list[ImagesPropertiesDockWidget]()
+        self.image_prop_dock_widget = ImagesPropertiesDockWidget(self)
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea, self.image_prop_dock_widget
+        )
+        self.extra_image_prop_dock_widgets = list[ImagesPropertiesDockWidget]()
 
-        self.alignment_toolbox = ImageAlignmentDockWidget(self)
-        self.addDockWidget(Qt.DockWidgetArea.NoDockWidgetArea, self.alignment_toolbox)
+        # Image alignment tool as a secondary window
+        self.alignment_window = ImageAlignmentWindow(self)
 
         # Viewers selection dock widget (show/hide viewers by ranges)
         self.viewers_selection_dock_widget = ViewersSelectionDockWidget(self)
@@ -226,7 +231,7 @@ class NebulaStudio(QMainWindow):
         pixel_size_in_um = self.stitching.get("pixel_size_in_um")
         objective = self.stitching.get("objective", 1.0)
         if displacements_um is None or pixel_size_in_um is None:
-            print("Stitching settings not found")
+            logging.getLogger(__name__).warning("Stitching settings not found")
             return None
         assert (
             isinstance(displacements_um, dict)
@@ -317,7 +322,9 @@ class NebulaStudio(QMainWindow):
 
             yaml.load(open(path), Loader=yaml.SafeLoader)
         except (AssertionError, FileNotFoundError, Exception) as e:
-            print(str(e))
+            logging.getLogger(__name__).exception(
+                "Error validating dropped file: %s", e
+            )
             a0.ignore()
             return
         a0.accept()
@@ -352,8 +359,8 @@ class NebulaStudio(QMainWindow):
     @title.setter
     def title(self, value: str):
         self.setWindowTitle(value)
-        [dw.setWindowTitle(value) for dw in self.image_prop_dock_widgets]
-        print(f"Window title set to {value}")
+        [dw.setWindowTitle(value) for dw in self.extra_image_prop_dock_widgets]
+        logging.getLogger(__name__).info("Window title set to %s", value)
 
     def load_config(self, settings: dict[str, Any]):
         if "title" in settings:
@@ -470,41 +477,48 @@ class NebulaStudio(QMainWindow):
                 c += 1
             r += 1
 
+        dock_widgets = list[ImagesPropertiesDockWidget]()
         for scenario in self.scenarios:
             dw = self.new_image_setting_panel()
             dw.on_image_selected(self.scenarios[scenario])
-        for dw in self.image_prop_dock_widgets[1:]:
-            self.tabifyDockWidget(self.image_prop_dock_widgets[0], dw)
-
-        for dw in self.image_prop_dock_widgets:
-            dw.update_image_selector()
+            dw.image_selector.hide()
+            dock_widgets.append(dw)
+        for dw in dock_widgets[1:]:
+            self.tabifyDockWidget(dock_widgets[0], dw)
 
         # Sync selection ranges with potentially updated grid size
         self.viewers_selection_dock_widget.sync_ranges()
+
+        # Update the image selector
+        self.image_prop_dock_widget.update_image_selector()
 
     def load_settings(self, settings: dict):
         if "title" in settings and not self.windowTitle() == settings["title"]:
             # Prevent application of settings if the title does not match
             # the current window title
             # This is useful to avoid applying settings to the wrong window
-            print(
-                f"Window title does not match: {self.windowTitle()} != {settings['title']}"
+            logging.getLogger(__name__).warning(
+                "Window title does not match: %s != %s",
+                self.windowTitle(),
+                settings["title"],
             )
 
         # Load scenarios settings
         scenarios = settings.get("scenarios", dict())
         if not isinstance(scenarios, dict):
-            print("'scenarios' key must be a dictionary")
+            logging.getLogger(__name__).warning("'scenarios' key must be a dictionary")
         else:
             for scenario, scenario_settings in scenarios.items():
                 if scenario not in self.scenarios:
-                    print(f"Scenario {scenario} not found in the current window")
+                    logging.getLogger(__name__).warning(
+                        "Scenario %s not found in the current window", scenario
+                    )
                     continue
                 self.scenarios[scenario].settings = scenario_settings
 
         images = settings.get("images", dict())
         if not isinstance(images, dict):
-            print("'images' key must be a dictionary")
+            logging.getLogger(__name__).warning("'images' key must be a dictionary")
         else:
             for image_url, image_settings in images.items():
                 for viewer in self.viewers:
@@ -515,19 +529,25 @@ class NebulaStudio(QMainWindow):
 
         positions = settings.get("positions", [])
         if not isinstance(positions, list):
-            print("'positions' key must be a list")
+            logging.getLogger(__name__).warning("'positions' key must be a list")
         else:
             for pos in positions:
                 if not isinstance(pos, dict):
-                    print("Each position must be a dictionary")
+                    logging.getLogger(__name__).warning(
+                        "Each position must be a dictionary"
+                    )
                     continue
                 row = pos.get("position", [0, 0])
                 if not isinstance(row, list) or len(row) != 2:
-                    print("Position must be a list of two integers")
+                    logging.getLogger(__name__).warning(
+                        "Position must be a list of two integers"
+                    )
                     continue
                 r, c = row
                 if not isinstance(r, int) or not isinstance(c, int):
-                    print("Row and column must be integers")
+                    logging.getLogger(__name__).warning(
+                        "Row and column must be integers"
+                    )
                     continue
                 viewer = self.viewer_at(r, c)
                 assert viewer is not None
@@ -615,7 +635,7 @@ class NebulaStudio(QMainWindow):
 
     def new_image_setting_panel(self):
         dw = ImagesPropertiesDockWidget(self)
-        self.image_prop_dock_widgets.append(dw)
+        self.extra_image_prop_dock_widgets.append(dw)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dw)
         dw.update_image_selector()
         return dw
@@ -698,7 +718,9 @@ class NebulaStudio(QMainWindow):
 
     # When the window becomes active, update the reticula color
     def activateWindow(self) -> None:
-        print(f"Activating NebulaStudio window {self.windowTitle()}")
+        logging.getLogger(__name__).info(
+            "Activating NebulaStudio window %s", self.windowTitle()
+        )
         return super().activateWindow()
 
     @property
